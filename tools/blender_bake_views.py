@@ -297,6 +297,16 @@ def bake_once(mat, target):
     return buf.reshape(SIZE, SIZE, 4)
 
 
+# Blender 单个 mesh 最多 8 个 UV layer。每视图 new 一个 ProjUV 会撞上限：
+# 第 8 个返回 None，foreach_set 抛 AttributeError，而 Blender 仍以 0 退出，
+# 宿主侧会「成功」合并成少一个视图的贴图（实测 8 机位只烘出 7 个，84.6%）。
+# 所有视图复用同一个 ProjUV，逐轮覆盖坐标即可，机位数不再受限制。
+proj = mesh.uv_layers.get("ProjUV") or mesh.uv_layers.new(name="ProjUV")
+if proj is None:
+    raise RuntimeError("创建 ProjUV 失败（UV layer 已达 8 个上限）")
+mesh.uv_layers.active = bakeuv
+bakeuv.active_render = True
+
 for key, v in CFG["views"].items():
     az = math.radians(float(v.get("azimuth", 0)))
     el = math.radians(float(v.get("elevation", 0)))
@@ -317,8 +327,9 @@ for key, v in CFG["views"].items():
     P = V @ inv[:3, :3].T + inv[:3, 3]
     u = 0.5 + P[:, 0] / ORTHO
     w = 0.5 + P[:, 1] / ORTHO
-    proj = mesh.uv_layers.new(name="ProjUV_" + key)
     flat = np.stack([u[lvi], w[lvi]], axis=1).astype(np.float32).ravel()
+    if proj is None:
+        raise RuntimeError(f"{key}: ProjUV 不可用")
     proj.data.foreach_set("uv", flat)
     print(f"BAKE view {key}: az={v.get('azimuth', 0)} el={v.get('elevation', 0)} "
           f"u=[{u.min():.3f},{u.max():.3f}] v=[{w.min():.3f},{w.max():.3f}]", flush=True)

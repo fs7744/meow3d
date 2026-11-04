@@ -62,9 +62,14 @@ def main() -> int:
     ap.add_argument("--reference", required=True, help="原始 2D 参考图（正面）")
     ap.add_argument("--out", required=True, help="输出 GLB")
     ap.add_argument("--cameras", type=int, default=4, help="总机位数")
-    ap.add_argument("--indices", default="0,1,2,3",
-                    help="交给 Qwen 生成的机位。**包含 0（正面）**：正面的原图直贴会"
-                         "因为网格比例不同而错位出重影，必须按网格重绘")
+    ap.add_argument("--indices", default=None,
+                    help="交给 Qwen 生成的机位，默认全部。**包含 0（正面）**："
+                         "正面的原图直贴会因为网格比例不同而错位出重影，必须按网格重绘")
+    ap.add_argument("--plan", help="相机方案 JSON（tools/plan_cameras.py 生成）")
+    ap.add_argument("--auto-cameras", type=int, default=0,
+                    help="自动生成 N 机位 normal-weighted 方案（带俯仰角，"
+                         "对齐 StableGen 的相机放置），会写 work/cameras.json")
+    ap.add_argument("--max-elevation", type=float, default=30.0)
     ap.add_argument("--size", type=int, default=1024,
                     help="Qwen 出图边长。1024 而不是 768：768 贴进 2048 图集会被放大")
     ap.add_argument("--steps", type=int, default=20,
@@ -108,13 +113,39 @@ def main() -> int:
     refined = work / "refined"
     for d in (work, views, ready, refined):
         d.mkdir(parents=True, exist_ok=True)
-    idx = [int(x) for x in args.indices.split(",") if x.strip()]
+    idx = [int(x) for x in args.indices.split(",") if x.strip()] if args.indices \
+        else list(range(args.cameras))
+
+    # --- 0. 相机方案：五个环节必须共用同一套角度 ---
+    from meow3d.projection import cameras as cam_mod
+    plan_path = None
+    if args.auto_cameras:
+        plan = cam_mod.normal_weighted_plan(
+            mesh, count=args.auto_cameras,
+            max_elevation=args.max_elevation)
+        plan_path = work / "cameras.json"
+        cam_mod.save_plan(plan, plan_path)
+        args.cameras = len(plan)
+        idx = list(range(args.cameras))
+        args.indices = ",".join(str(i) for i in idx)
+    elif args.plan:
+        plan_path = Path(args.plan).resolve()
+        plan = cam_mod.load_plan(plan_path)
+        args.cameras = len(plan)
+        if not args.indices:
+            idx = list(range(args.cameras))
+            args.indices = ",".join(str(i) for i in idx)
+    if args.indices is None:
+        args.indices = ",".join(str(i) for i in idx)
+    if plan_path:
+        print(f"相机方案 {plan_path}（{args.cameras} 机位）", flush=True)
+    extra = ["--plan", plan_path] if plan_path else []
 
     # --- 1. 指引图（必须含 flat，颜色锚定的基准）---
     print("[1/5] 渲指引图", flush=True)
     guide_py = ROOT / "tools" / "guidance.py"
     gcmd = [PY, guide_py, mesh, "--cameras", args.cameras,
-            "--indices", args.indices, "--out-dir", guide]
+            "--indices", args.indices, "--out-dir", guide, *extra]
     if not (guide / f"v{idx[0]:02d}_depth_c.png").is_file():
         run([*gcmd, "--passes", "depth,normal,clay,beauty,flat"], quiet=True)
     elif any(not (guide / f"v{i:02d}_flat.png").is_file() for i in idx):
@@ -135,7 +166,7 @@ def main() -> int:
                 "--ref", ref, "--guide", guide, "--mode", "beauty",
                 "--cameras", args.cameras, "--indices", args.indices,
                 "--size", args.size, "--steps", args.steps,
-                "--out-dir", views]
+                "--out-dir", views, *extra]
         if not args.lightning:
             qcmd.append("--no-lightning")
         if args.two_images:
@@ -167,7 +198,7 @@ def main() -> int:
              "--views", ready, "--guide", guide,
              "--cameras", args.cameras, "--indices", args.indices,
              "--out", refined, "--protect", args.protect,
-             "--anchor", args.anchor])
+             "--anchor", args.anchor, *extra])
         bake_views, align = refined, "frame"
     else:
         print("[4/5] 跳过精修（--no-refine，旧路径）", flush=True)
@@ -180,7 +211,7 @@ def main() -> int:
            "--view-indices", args.indices,
            "--align", align, "--exponent", args.exponent,
            "--detail", args.detail, "--out", args.out,
-           "--work-dir", work / "bake"]
+           "--work-dir", work / "bake", *extra]
     if align == "similarity":
         cmd += ["--guide-dir", guide]
     run(cmd)

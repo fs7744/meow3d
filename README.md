@@ -227,7 +227,43 @@ IoU 0.66~0.83。
 发色/战服红/五官明显更贴近原设计。要退回旧行为用 `--no-refine --lightning`。
 
 完整源码级差距清单与优先级见 `docs/路线相同但效果较差-源码级定位与改进.md`。
-全量单测 **40 passed**（`tests/test_refine.py` 新增 7 条，纯 numpy 无 GPU）。
+
+### 相机布置（同日续）
+
+旧版是 `i*360/N` 的 4 个等分**水平**机位，头顶/肩窝/腋下天然覆盖不到。
+新增 `meow3d/projection/cameras.py` + `tools/plan_cameras.py`：面法线按面积
+加权做球面 K-means，正面固定 index 0，俯仰 clamp 到 ±30°，可剔除朝下的面。
+
+```bash
+# 先出方案看看（Asuka 实算：0/54/107/135/171(+19°)/204(-11°)/277/359(+30°)）
+.venv/Scripts/python.exe tools/plan_cameras.py <网格.glb> --count 8 \
+    --out .tmp/cameras8.json
+
+# 或让编排自动生成并跑完整链路
+.venv/Scripts/python.exe tools/run_guided.py <网格.glb> \
+    --reference <原图.png> --out out/xxx.glb --auto-cameras 8
+
+# 对照旧行为
+.venv/Scripts/python.exe tools/plan_cameras.py <网格.glb> --count 4 --ring \
+    --out .tmp/ring4.json
+```
+
+`--plan` 会同时传给 `guidance.py` / `qwen_guided_views.py`（角度词按真实方位
+与俯仰生成）/ `refine_views.py`（bbox 按真实俯仰算）/ `bake_projection.py`，
+**五个环节共用同一套角度** —— 这是多视图投影最容易悄悄出错的地方。
+
+**⚠️ 8 机位踩坑已修**：Blender 单个 mesh 最多 8 个 UV layer，原来每个视图
+新建一个 `ProjUV` 会撞上限，第 8 个返回 `None`；而 `blender -b -P` 里的
+Python 异常**仍以 0 退出**，宿主 `check=True` 抓不到，会静默少烘一个视图
+（实测只出 7 个、覆盖 84.6%）。现在所有视图复用同一个 `ProjUV`，并在合并前
+用 `bake.verify_baked_views()` 强制核对视图数 + 清掉旧 npy。
+
+实测（20 步 + flat 精修）：8/8 视图、覆盖 **85.7%**（4 机位 80.9%，+4.8pp）、
+贴图相对原生平均 |ΔRGB| **0.0703**、bake 32.1s、完整链路 5m18s。
+对比图 `out/asuka_cam8_fixed_views.png`。
+
+全量单测 **50 passed**（`tests/test_cameras.py` 7 条 +
+`tests/test_bake_guard.py` 3 条回归）。
 
 ### v1（legacy：UV texel 反向映射）
 

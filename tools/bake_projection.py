@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from meow3d.projection import bake as bake_impl  # noqa: E402
+from meow3d.projection import cameras  # noqa: E402
 
 
 def main() -> int:
@@ -40,6 +41,7 @@ def main() -> int:
     ap.add_argument("--cameras", type=int, default=8, help="总相机数（决定方位角步长）")
     ap.add_argument("--view-indices", default="",
                     help="只取哪些视角，如 0,2,4,6；留空取前 N 个")
+    ap.add_argument("--plan", help="相机方案 JSON；给了就用它的方位角/俯仰角")
     ap.add_argument("--view", action="append", default=[],
                     help="自定义视角 name:图片路径:方位角，可重复")
     ap.add_argument("--size", type=int, default=0,
@@ -76,6 +78,7 @@ def main() -> int:
 
     views = []
     align = args.align
+    plan = cameras.load_plan(args.plan) if args.plan else None
     guide_dir = Path(args.guide_dir) if args.guide_dir else None
     if args.reference:
         views.append({"name": "front", "image": args.reference,
@@ -91,8 +94,10 @@ def main() -> int:
             if not p.is_file():
                 print(f"跳过缺失视角 {p}")
                 continue
+            az, el = (cameras.angles_for(plan, i) if plan
+                      else (360.0 * i / args.cameras, 0.0))
             v = {"name": f"v{i:02d}", "image": str(p),
-                 "azimuth": 360.0 * i / args.cameras, "elevation": 0.0,
+                 "azimuth": az, "elevation": el,
                  "align": align}
             if align == "similarity" and guide_dir is not None:
                 # 指引图的深度通道 = 模型在该机位的真实轮廓，做 IoU 基准

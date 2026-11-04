@@ -115,6 +115,8 @@ def main() -> int:
                     choices=("beauty", "control", "both"))
     ap.add_argument("--cameras", type=int, default=4)
     ap.add_argument("--indices", default="0,1,2,3")
+    ap.add_argument("--plan", help="相机方案 JSON（tools/plan_cameras.py）；"
+                                   "按它的方位角/俯仰角写提示词，不靠等分环推算")
     ap.add_argument("--two-images", action="store_true",
                     help="同时给参考图与彩图。**默认不给**：两张全身站姿图一起进来时，"
                          "Qwen 会时不时画成「左原图右结果」的两格拼图，飘带一重叠就连"
@@ -137,6 +139,10 @@ def main() -> int:
     args = ap.parse_args()
 
     size = args.size // 32 * 32
+    # 只吃 JSON，不 import meow3d：本脚本跑在主项目 py3.13 venv 里
+    import json
+    plan = (json.loads(Path(args.plan).read_text(encoding="utf-8"))
+            if args.plan else None)
     if not args.two_images:
         print("  单图模式：--ref 只作记录，**不参与生成**（只喂 beauty 底图）；"
               "原设计的颜色由后续 refine_views.py 的 flat 基准承载。\n"
@@ -206,8 +212,22 @@ def main() -> int:
             print(f"缺深度图 {depth}，跳过")
             continue
 
-        az = 360.0 * i / args.cameras
-        word = ANGLE_WORD.get(int(round(az)), f"{az:.0f} degree view")
+        az, el = 360.0 * i / args.cameras, 0.0
+        if plan:
+            for c in plan:
+                if int(c.get("index", -1)) == i or c.get("name") == f"v{i:02d}":
+                    az = float(c.get("azimuth", az))
+                    el = float(c.get("elevation", 0.0))
+                    break
+        nearest = min(ANGLE_WORD,
+                      key=lambda a: min(abs(az - a), 360.0 - abs(az - a)))
+        gap = min(abs(az - nearest), 360.0 - abs(az - nearest))
+        word = (ANGLE_WORD[nearest] if gap <= 22.5
+                else f"{az:.0f} degree view")
+        if el > 8:
+            word += " from slightly above"
+        elif el < -8:
+            word += " from slightly below"
         kw = {}
         inj = None
         if args.mode in ("control", "both"):

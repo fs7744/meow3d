@@ -27,7 +27,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from meow3d.projection import bake, refine  # noqa: E402
+from meow3d.projection import bake, cameras, refine  # noqa: E402
 
 
 def main() -> int:
@@ -38,6 +38,7 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="输出目录")
     ap.add_argument("--cameras", type=int, default=4)
     ap.add_argument("--indices", default="0,1,2,3")
+    ap.add_argument("--plan", help="相机方案 JSON；bbox 按它的方位角/俯仰角算")
     ap.add_argument("--size", type=int, default=0,
                     help="画布边长；0=跟随 beauty 尺寸")
     ap.add_argument("--protect", type=float, default=0.85,
@@ -80,6 +81,7 @@ def main() -> int:
           flush=True)
 
     V = bake.normalized_vertices(mesh)
+    plan = cameras.load_plan(args.plan) if args.plan else None
     work = odir / ".aligned"
     work.mkdir(parents=True, exist_ok=True)
     report = {"mesh": str(mesh), "size": size, "protect": args.protect,
@@ -99,8 +101,9 @@ def main() -> int:
                 im = im.resize((size, size), Image.LANCZOS)
             im.save(aligned)
         else:
-            az = 360.0 * i / args.cameras
-            bbox = bake.projection_bbox(V, az, 0.0)
+            az, el = (cameras.angles_for(plan, i) if plan
+                      else (360.0 * i / args.cameras, 0.0))
+            bbox = bake.projection_bbox(V, az, el)
             ref_mask = None
             for cand in (f"{key}_depth_c.png", f"{key}_depth.png"):
                 if (gdir / cand).is_file():

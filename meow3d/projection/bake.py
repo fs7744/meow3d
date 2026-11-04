@@ -419,6 +419,27 @@ def _fill_holes(acc: np.ndarray, wsum: np.ndarray) -> np.ndarray:
     return out
 
 
+def verify_baked_views(work_dir: Path, names: Sequence[str]) -> List[str]:
+    """合并前核对 Blender 实际烘出的视图数。
+
+    Blender 的 `-b -P` 里 Python 抛异常时仍可能以 0 退出，宿主侧
+    ``subprocess.run(check=True)`` 抓不到；曾出现 8 机位因 UV layer 上限
+    只烘出 7 个、却「成功」合并成 84.6% 覆盖贴图的情况。这里强制补齐。
+    """
+    vdir = Path(work_dir) / "views"
+    got = sorted(p.name[:-len("_color.npy")]
+                 for p in vdir.glob("*_color.npy"))
+    expected = set(names)
+    missing = sorted(expected - set(got))
+    extra = sorted(set(got) - expected)
+    if missing:
+        raise RuntimeError(
+            f"Blender 只烘了 {len(got)}/{len(expected)} 个视图，缺 {missing}；"
+            f"看 Blender 日志里的 UV layer 上限 / 材质错误。"
+            f"（多余的缓存：{extra}）")
+    return got
+
+
 def merge(work_dir: Path, size: int,
           base: Optional[np.ndarray] = None,
           blend: str = "weighted",
@@ -571,9 +592,18 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
         # --- 2. Blender 表面投影 + bake ---
         if verbose:
             print(f"  Blender bake {len(views)} 个相机（engine={engine}）…", flush=True)
+        # 清掉上一次的 npy：merge() 会 glob 目录里所有 *_color.npy，
+        # 残留的旧视图会被混进本次合并，而且会掩盖「少烘了」的错误。
+        vdir = work / "views"
+        for stale in (list(vdir.glob("*_color.npy"))
+                      + list(vdir.glob("*_weight.npy"))):
+            stale.unlink()
         subprocess.run([str(blender), "-b", "-P",
                         str(ROOT / "tools" / "blender_bake_views.py"),
                         "--", str(cfg_path)], check=True)
+        got = verify_baked_views(work, [v["name"] for v in views])
+        if verbose:
+            print(f"  Blender 已烘 {len(got)}/{len(views)} 个视图", flush=True)
     elif verbose:
         print("  复用已烘焙视图（Reproject）", flush=True)
 

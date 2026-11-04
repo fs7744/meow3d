@@ -40,6 +40,8 @@ def main() -> int:
     ap.add_argument("--indices", default="", help="取哪些机位，如 0,2,4,6；留空=全部")
     ap.add_argument("--size", type=int, default=1024, help="输出边长（与 bake 同框）")
     ap.add_argument("--elevation", type=float, default=0.0)
+    ap.add_argument("--plan", help="相机方案 JSON（tools/plan_cameras.py 生成）；"
+                                   "给了就用它的方位角/俯仰角，忽略 --cameras/--indices")
     ap.add_argument("--passes", default="depth,normal,clay,beauty,flat",
                     help="要渲哪些通道，逗号分隔")
     ap.add_argument("--sheet", action="store_true", help="额外拼 4 联对照图")
@@ -52,7 +54,14 @@ def main() -> int:
     out_dir = Path(args.out_dir) if args.out_dir else \
         ROOT / ".tmp" / f"guide_{mesh.stem}"
     idx = [int(x) for x in args.indices.split(",") if x.strip()] if args.indices else None
-    cams = guidance.camera_list(args.cameras, idx, args.elevation)
+    if args.plan:
+        from meow3d.projection import cameras
+        plan = cameras.load_plan(args.plan)
+        cams = [{"name": c["name"],
+                 "azimuth": float(c.get("azimuth", 0)),
+                 "elevation": float(c.get("elevation", 0))} for c in plan]
+    else:
+        cams = guidance.camera_list(args.cameras, idx, args.elevation)
     passes = tuple(p.strip() for p in args.passes.split(",") if p.strip())
 
     print(f"网格 {mesh}\n机位 {len(cams)} 个: "
