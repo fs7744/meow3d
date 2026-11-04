@@ -123,19 +123,32 @@ def main() -> int:
         fg = refine.background_mask(beauty)
         mask = (alpha > 0.1) & fg
         src_rgb = refine.load_rgb(aligned)
-        out, stats = refine.protective_blend(
-            src_rgb, beauty, mask, protect=args.protect,
-            strength=args.anchor)
+        if refine.has_color_reference(beauty, fg):
+            out, stats = refine.protective_blend(
+                src_rgb, beauty, mask, protect=args.protect,
+                strength=args.anchor)
+            white_mesh = False
+        else:
+            # 白模：底图是纯白/纯灰，没有任何可信颜色。颜色锚定会把 Qwen
+            # 刚生成的彩色拉成白，保护性合成也会把白底混进贴图 —— 两者都跳过，
+            # 只保留「同机位对齐」，让 Qwen 输出成为唯一颜色来源。
+            out, stats = src_rgb.copy(), {
+                "applied": False, "channels": [], "protect": 0.0,
+                "mean_weight": 1.0, "max_weight": 1.0,
+                "mean_detail_gain": 0.0, "white_mesh": True,
+            }
+            white_mesh = True
         dst = odir / f"view_{i:02d}.png"
         refine.save_rgba(out, alpha * fg.astype(np.float32), dst)
-        entry = {"view": key, "base": kind,
+        entry = {"view": key, "base": kind, "white_mesh": white_mesh,
                  "out": str(dst), "coverage": round(float(mask.mean()), 4),
                  "align": info.get("align", "frame"),
                  "iou": info.get("iou"), **stats}
         report["views"].append(entry)
+        tail = (f"色偏 ΔY {stats['channels'][0]['delta']:+.3f}"
+                if stats.get("channels") else "白模·跳过颜色锚定")
         print(f"  {key}: 前景 {mask.mean():.1%}，对齐 IoU {info.get('iou', '-')}，"
-              f"平均改写权重 {stats['mean_weight']:.3f}，"
-              f"色偏 ΔY {stats['channels'][0]['delta'] if stats.get('channels') else 0:+.3f}"
+              f"平均改写权重 {stats['mean_weight']:.3f}，{tail}"
               f" → {dst.name}", flush=True)
 
     (odir / "refine_report.json").write_text(

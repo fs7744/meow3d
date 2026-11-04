@@ -290,6 +290,29 @@ Asuka 实测 `2.8 → 2.16`，角色 **732 → 948 px（+29.5%）**、占画幅
 
 新增 `tests/test_fill_frame.py` 6 条单测，全量单测 **56 passed**。
 
+### 白模路线（`--white-mesh`）
+
+从 `MeshOnly` 白模出发可以做到**完全不碰 nvdiffrast / nvdiffrec**：
+
+```bash
+.venv/Scripts/python.exe tools/run_guided.py out/meow3d/asuka_WhiteMesh_00001_.glb \
+    --reference out/in/asuka.png --out out/xxx.glb --white-mesh --fill-frame
+```
+
+白模 **没有 UV 也没有贴图**，开关会自动设 `protect=0` / `unwrap=smart` /
+`--two-images`（把参考图注入 Qwen）；`refine` 检测到 flat 基准是纯白
+（通道差 0.003）会**跳过颜色锚定与保护性合成**，否则会把 Qwen 生成的
+橙发/红战服全拉成白。实测双图 Qwen 在白模上不拼图，颜色与细节都正确。
+
+严格 A/B（同一批 Qwen 出图，一组下采样成等效 2.8 构图）：
+高频能量 0.0404 → **0.0434（+7.4%）**，是带贴图路线（+3.0%）的 2.5 倍 ——
+白模没有可信底图可锁，画幅收益确实更直接。但**新瓶颈是 UV**：
+smart unwrap 单视图权重覆盖仅 8.8~12.1%，4 视图并集 26.6%
+（带贴图 8 机位是 85.7%），73% 图集靠扩散填充，侧视有杂色条纹。
+下一步应做白模 8 机位 / Cube Project UV / 2048² 图集，而不是继续加画幅或步数。
+
+全量单测 **57 passed**。详见差距文档第十一节。
+
 ### v1（legacy：UV texel 反向映射）
 
 `tools/project_texture.py` 的 `replace` 模式仍可用（正面原图直贴，1.9s），但

@@ -88,6 +88,18 @@ def test_detail_gain_releases_blurred_base_only():
     assert not g_blur[~mask].any()
 
 
+def test_has_color_reference_distinguishes_white_mesh():
+    _, mask = _figure()
+    colorful = _figure(color=(0.8, 0.2, 0.1))[0]
+    white = _figure(color=(0.983, 0.984, 0.986))[0]
+    assert refine.has_color_reference(colorful, mask)
+    assert not refine.has_color_reference(white, mask)
+    # 前景太小也应判不可信
+    tiny = np.zeros(mask.shape, bool)
+    tiny[0, 0] = True
+    assert not refine.has_color_reference(colorful, tiny)
+
+
 def test_save_rgba_roundtrip(tmp_path):
     rgb = _solid()
     alpha = np.zeros(rgb.shape[:2], np.float32)

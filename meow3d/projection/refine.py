@@ -82,6 +82,22 @@ def background_mask(rgb: Array, tol: float = 0.10) -> Array:
     return fg
 
 
+def has_color_reference(rgb: Array, mask: Array,
+                        min_spread: float = 0.06) -> bool:
+    """底图是否携带可信颜色信息。
+
+    白模（没有 baseColorTexture）渲出的 flat/beauty 是**纯白或纯灰**：
+    Emission fallback 灰 + Standard 变换 ≈ 0.98，通道间差只有 0.003。
+    拿它做 YUV 颜色锚定会把 Qwen 刚生成的彩色全部拉成白，是灾难。
+    带贴图 flat 的前景通道差通常 0.2~0.6，阈值 0.06 能干净分开。
+    """
+    m = mask.astype(bool)
+    if m.sum() < 64:
+        return False
+    px = rgb[m]
+    return float(np.mean(px.max(1) - px.min(1))) >= min_spread
+
+
 def _yuv(rgb: Array) -> Array:
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
     return np.stack([

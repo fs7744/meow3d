@@ -99,11 +99,25 @@ def main() -> int:
                     help="颜色锚定强度 0~1")
     ap.add_argument("--no-refine", action="store_true",
                     help="回到旧的「整幅重绘 + similarity 对齐」路径")
+    ap.add_argument("--unwrap", default="keep",
+                    choices=("keep", "cube", "smart", "auto"),
+                    help="UV 策略，传给 bake；白模（无贴图无 UV）必须用 smart/cube")
+    ap.add_argument("--white-mesh", action="store_true",
+                    help="白模路线：自动设 protect=0 / unwrap=smart / 双图注入参考图。"
+                         "Qwen 是唯一颜色来源，refine 会自动跳过颜色锚定")
     ap.add_argument("--detail", type=float, default=0.0)
     ap.add_argument("--work", help="中间目录，默认 .tmp/guided_<网格名>")
     ap.add_argument("--reuse-views", action="store_true",
                     help="复用 work 里已生成的视角（只重跑精修与 bake）")
     args = ap.parse_args()
+    if args.white_mesh:
+        args.protect = 0.0
+        if args.unwrap == "keep":
+            args.unwrap = "smart"
+        args.two_images = True
+        print("白模路线：protect=0、unwrap="
+              f"{args.unwrap}、双图注入参考图（refine 自动跳过颜色锚定）",
+              flush=True)
 
     mesh = Path(args.mesh).resolve()
     ref = Path(args.reference).resolve()
@@ -249,7 +263,8 @@ def main() -> int:
            "--views-dir", bake_views, "--cameras", args.cameras,
            "--view-indices", args.indices,
            "--align", align, "--exponent", args.exponent,
-           "--detail", args.detail, "--out", args.out,
+           "--detail", args.detail, "--unwrap", args.unwrap,
+           "--out", args.out,
            "--work-dir", work / "bake", *extra, *extra_ortho]
     if align == "similarity":
         cmd += ["--guide-dir", guide]
