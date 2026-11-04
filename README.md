@@ -265,6 +265,31 @@ Python 异常**仍以 0 退出**，宿主 `check=True` 抓不到，会静默少�
 全量单测 **50 passed**（`tests/test_cameras.py` 7 条 +
 `tests/test_bake_guard.py` 3 条回归）。
 
+### 裁满画幅（`--fill-frame`）
+
+原来 `ORTHO=2.8` 写死，模型归一化后最大跨度只有 2.0 → 角色在 1024² 视图里
+只占 71.5%（约 732px 高）。现在画幅由 `bake.fit_ortho()` 按所有机位的
+最大投影跨度自动算，并通过 `--ortho` 同步给 guidance / refine / bake：
+
+```bash
+.venv/Scripts/python.exe tools/run_guided.py <网格.glb> \
+    --reference <原图.png> --out out/xxx.glb --fill-frame
+```
+
+Asuka 实测 `2.8 → 2.16`，角色 **732 → 948 px（+29.5%）**、占画幅
+71.5% → 92.6%，头发/脚尖完整未裁切。画幅变了会强制重渲指引图、禁用
+`--reuse-views`、禁止 Reproject 复用旧缓存（避免静默错位）。
+
+⚠️ **反直觉结论**：最终贴图只改善约 3%（高频能量 0.0301 → 0.0310，
+\|ΔRGB\| 0.0759 → 0.0747）。把 `--protect` 降到 0.5 后增益仍只有 +3.2% ——
+**当前「糊」的根因不是 Qwen 视图分辨率，而是 UV 图集的 texel 密度**；
+带贴图路线的底图本来就是 2048² 原生贴图，不缺分辨率。同理，20 步 vs 8 步
+也只有 -4.1%：保护性合成会系统性稀释所有上游生成质量的改进。
+这轮的真正价值是给**白模路线**（`--protect 0`，Qwen 是唯一颜色来源）铺路，
+以及统一画幅参数、纠正归因。详见差距文档第十节。
+
+新增 `tests/test_fill_frame.py` 6 条单测，全量单测 **56 passed**。
+
 ### v1（legacy：UV texel 反向映射）
 
 `tools/project_texture.py` 的 `replace` 模式仍可用（正面原图直贴，1.9s），但

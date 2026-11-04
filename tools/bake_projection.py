@@ -42,6 +42,8 @@ def main() -> int:
     ap.add_argument("--view-indices", default="",
                     help="只取哪些视角，如 0,2,4,6；留空取前 N 个")
     ap.add_argument("--plan", help="相机方案 JSON；给了就用它的方位角/俯仰角")
+    ap.add_argument("--ortho", type=float, default=0.0,
+                    help="正交相机视野边长；0=默认 2.8，必须与 guidance 一致")
     ap.add_argument("--view", action="append", default=[],
                     help="自定义视角 name:图片路径:方位角，可重复")
     ap.add_argument("--size", type=int, default=0,
@@ -129,7 +131,7 @@ def main() -> int:
         args.mesh, args.out, views, size=args.size, exponent=args.exponent,
         margin=args.margin, decimate=args.decimate, engine=args.engine,
         unwrap=args.unwrap, fill=args.fill, blend=args.blend, detail=args.detail,
-        occlude=not args.no_occlude,
+        occlude=not args.no_occlude, ortho=args.ortho,
         work_dir=args.work_dir, reproject=args.reproject,
     )
     print(f"\n完成：{res['path']}（{res.get('out_size', 0) / 1e6:.1f}MB）")

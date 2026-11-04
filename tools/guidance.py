@@ -42,6 +42,9 @@ def main() -> int:
     ap.add_argument("--elevation", type=float, default=0.0)
     ap.add_argument("--plan", help="相机方案 JSON（tools/plan_cameras.py 生成）；"
                                    "给了就用它的方位角/俯仰角，忽略 --cameras/--indices")
+    ap.add_argument("--ortho", type=float, default=0.0,
+                    help="正交相机视野边长；0=用默认 2.8。"
+                         "裁满画幅时由 --fill-frame 自动算，必须与 bake 一致")
     ap.add_argument("--passes", default="depth,normal,clay,beauty,flat",
                     help="要渲哪些通道，逗号分隔")
     ap.add_argument("--sheet", action="store_true", help="额外拼 4 联对照图")
@@ -66,7 +69,8 @@ def main() -> int:
 
     print(f"网格 {mesh}\n机位 {len(cams)} 个: "
           + ", ".join(f"{c['name']}@{c['azimuth']:.0f}°" for c in cams), flush=True)
-    res = guidance.render(mesh, out_dir, cams, size=args.size, passes=passes)
+    res = guidance.render(mesh, out_dir, cams, size=args.size,
+                          passes=passes, ortho=args.ortho)
 
     if "depth" in passes:
         for c in cams:

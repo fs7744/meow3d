@@ -36,9 +36,12 @@ def camera_list(count: int, indices: Sequence[int] | None = None,
 
 def render(mesh: str | Path, work_dir: str | Path,
            cameras: List[Dict[str, Any]], *, size: int = 1024,
-           passes: Sequence[str] = PASSES,
+           passes: Sequence[str] = PASSES, ortho: float = 0.0,
            verbose: bool = True) -> Dict[str, Any]:
-    """调 Blender 渲出每个机位的指引图，返回 {机位名: {pass: 路径}}。"""
+    """调 Blender 渲出每个机位的指引图，返回 {机位名: {pass: 路径}}。
+
+    ``ortho`` 必须与 bake 用的一致，否则指引图与 ProjUV 不同框。
+    """
     mesh = Path(mesh).resolve()
     work = Path(work_dir).resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -46,7 +49,8 @@ def render(mesh: str | Path, work_dir: str | Path,
     if bad:
         raise ValueError(f"未知 pass {bad}，可用 {list(PASSES)}")
     cfg = {"mesh": str(mesh), "work_dir": str(work), "size": int(size),
-           "ortho": ORTHO, "cameras": cameras, "passes": list(passes)}
+           "ortho": float(ortho) if ortho else ORTHO,
+           "cameras": cameras, "passes": list(passes)}
     cfg_path = work / "guidance_config.json"
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
                         encoding="utf-8")

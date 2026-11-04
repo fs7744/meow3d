@@ -73,17 +73,45 @@ def normalized_vertices(mesh_path: str | Path) -> np.ndarray:
 
 
 def projection_bbox(V: np.ndarray, azimuth_deg: float,
-                    elevation_deg: float = 0.0) -> tuple[float, float, float, float]:
-    """模型在该相机下占的 [0,1]² 屏幕范围（u0,v0,u1,v1，v 向上）。"""
+                    elevation_deg: float = 0.0,
+                    ortho: float = 0.0) -> tuple[float, float, float, float]:
+    """模型在该相机下占的 [0,1]² 屏幕范围（u0,v0,u1,v1，v 向上）。
+
+    ``ortho=0`` 用全局 ORTHO；传值则覆盖（裁满画幅时用）。
+    这个值必须与 Blender 侧 ``cam_data.ortho_scale`` **完全一致**，
+    否则 guidance 图、Qwen 出图、ProjUV 三者会错位。
+    """
+    scale = float(ortho) if ortho else ORTHO
     az, el = math.radians(azimuth_deg), math.radians(elevation_deg)
     d = np.array([math.sin(az) * math.cos(el),
                   -math.cos(az) * math.cos(el), math.sin(el)])
     up = np.array([0.0, 0.0, 1.0])
     right = np.cross(up, d)
     right /= np.linalg.norm(right) + 1e-8
-    u = 0.5 + (V @ right) / ORTHO
-    v = 0.5 + (V @ up) / ORTHO
+    u = 0.5 + (V @ right) / scale
+    v = 0.5 + (V @ up) / scale
     return float(u.min()), float(v.min()), float(u.max()), float(v.max())
+
+
+def fit_ortho(V: np.ndarray, angles: Sequence[tuple[float, float]],
+              margin: float = 1.08, base: float = 0.0) -> float:
+    """按所有相机方向下模型的最大投影跨度，算出「刚好装得下」的 ortho。
+
+    原来是固定 ``ORTHO=2.8``，而模型归一化后最大跨度只有 2.0 —— 角色只占
+    ~71% 画幅，1024² 视图里头部约 90px，投进 2048² 图集要放大 6~8 倍。
+    把所有环节一起换成 ``span*margin``（默认 1.08，留 8% 边距），
+    头部有效像素可提升约 1.3 倍，且 guidance/Qwen/ProjUV 仍然逐像素同框。
+
+    ``margin`` 不能取 1.0：扩散模型对贴边内容容易裁掉头发/脚尖。
+    """
+    b = float(base) if base else ORTHO
+    spans = []
+    for az, el in angles:
+        u0, v0, u1, v1 = projection_bbox(V, az, el, ortho=b)
+        spans.append(max(u1 - u0, v1 - v0) * b)
+    if not spans:
+        return b
+    return round(max(spans) * max(1.01, float(margin)), 4)
 
 
 def make_aligned_view(src: str | Path, dst: str | Path, bbox: Sequence[float],
@@ -510,14 +538,16 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
         *, size: int = 0, exponent: float = 3.0, margin: int = 4,
         decimate: int = 0, engine: str = "CYCLES", unwrap: str = "keep",
         fill: str = "base", blend: str = "weighted", detail: float = 0.0,
-        occlude: bool = True,
+        occlude: bool = True, ortho: float = 0.0,
         work_dir: Optional[str | Path] = None, reproject: bool = False,
         verbose: bool = True) -> Dict[str, Any]:
     """views: [{"name","image","azimuth","elevation"?}]，image 是原始视图路径。
 
     size=0 → 自动：keep 模式跟原生贴图同边长（保住原有纹素密度），
     其余 1024。显式给值则按给的来。
+    ``ortho`` 必须与 guidance 渲染用的一致（裁满画幅时一起改）。
     """
+    ortho_eff = float(ortho) if ortho else ORTHO
     mesh, out = Path(mesh).resolve(), Path(out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     if size <= 0:
@@ -535,11 +565,15 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
     if reusing:
         cfg_path = work / "bake_config.json"
         if cfg_path.is_file():
-            cached = json.loads(cfg_path.read_text(encoding="utf-8")).get("size")
-            if cached and int(cached) != size:
+            cached = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if cached.get("size") and int(cached["size"]) != size:
                 raise RuntimeError(
-                    f"缓存是 {cached}² 的 bake 结果，和这次 size={size} 不一致；"
+                    f"缓存是 {cached['size']}² 的 bake 结果，和这次 size={size} 不一致；"
                     f"换 --work-dir 或删掉 {work}")
+            if cached.get("ortho") and abs(float(cached["ortho"]) - ortho_eff) > 1e-3:
+                raise RuntimeError(
+                    f"缓存是 ortho={cached['ortho']} 的 bake 结果，和这次 "
+                    f"ortho={ortho_eff} 不一致；画幅变了必须重烘，不能 Reproject")
 
     # --- 1. 严格对齐视图 ---
     if not reusing:
@@ -552,7 +586,8 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
                 info = make_frame_aligned_view(v["image"], dst, size)
             else:
                 bbox = projection_bbox(V, float(v.get("azimuth", 0)),
-                                       float(v.get("elevation", 0)))
+                                       float(v.get("elevation", 0)),
+                                       ortho=ortho_eff)
                 if how == "similarity":
                     info = make_similarity_aligned_view(
                         v["image"], dst, bbox, size, v.get("ref_mask"))
@@ -582,7 +617,7 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
                     print(f"  ⚠ 视图 {v['name']} 没有透明通道：先跑 "
                           f"tools/matte.py，否则对齐/权重都会失效", flush=True)
         cfg = {"mesh": str(mesh), "work_dir": str(work), "views": cfg_views,
-               "size": size, "ortho": ORTHO, "exponent": exponent,
+               "size": size, "ortho": ortho_eff, "exponent": exponent,
                "margin": margin, "decimate": decimate, "engine": engine,
                "unwrap": unwrap, "occlude": occlude}
         cfg_path = work / "bake_config.json"

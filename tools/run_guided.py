@@ -70,6 +70,14 @@ def main() -> int:
                     help="自动生成 N 机位 normal-weighted 方案（带俯仰角，"
                          "对齐 StableGen 的相机放置），会写 work/cameras.json")
     ap.add_argument("--max-elevation", type=float, default=30.0)
+    ap.add_argument("--ortho", type=float, default=0.0,
+                    help="正交相机视野边长；0=默认 2.8。会同步传给 guidance/refine/bake")
+    ap.add_argument("--fill-frame", action="store_true",
+                    help="按模型在所有机位下的最大投影跨度自动收紧画幅，"
+                         "让角色占满 1024² 视图（头部有效像素约 +30%）")
+    ap.add_argument("--frame-margin", type=float, default=1.08,
+                    help="--fill-frame 的留边系数；别低于 1.05，"
+                         "扩散模型容易裁掉贴边的头发/脚尖")
     ap.add_argument("--size", type=int, default=1024,
                     help="Qwen 出图边长。1024 而不是 768：768 贴进 2048 图集会被放大")
     ap.add_argument("--steps", type=int, default=20,
@@ -141,12 +149,39 @@ def main() -> int:
         print(f"相机方案 {plan_path}（{args.cameras} 机位）", flush=True)
     extra = ["--plan", plan_path] if plan_path else []
 
+    # --- 0b. 画幅：按模型真实投影跨度收紧，五个环节必须同步 ---
+    from meow3d.projection import bake as bake_mod
+    if args.fill_frame:
+        V = bake_mod.normalized_vertices(mesh)
+        if plan_path:
+            pp = cam_mod.load_plan(plan_path)
+            angles = [(float(c.get("azimuth", 0)),
+                       float(c.get("elevation", 0))) for c in pp]
+        else:
+            angles = [(360.0 * i / args.cameras, 0.0) for i in idx]
+        args.ortho = bake_mod.fit_ortho(
+            V, angles, margin=args.frame_margin, base=bake_mod.ORTHO)
+        ratio = bake_mod.ORTHO / args.ortho
+        print(f"裁满画幅：ortho {bake_mod.ORTHO:.2f} → {args.ortho:.3f}"
+              f"（角色占画幅 {2.0/bake_mod.ORTHO:.1%} → {2.0/args.ortho:.1%}，"
+              f"有效分辨率 ×{ratio:.2f}）", flush=True)
+    extra_ortho = ["--ortho", args.ortho] if args.ortho else []
+    # 画幅变了必须重渲指引图，否则旧 2.8 的 depth/flat 会和新 ProjUV 错位
+    force_guide = bool(args.ortho)
+    if args.ortho:
+        import json
+        gcfg = guide / "guidance_config.json"
+        if gcfg.is_file():
+            old = json.loads(gcfg.read_text(encoding="utf-8")).get("ortho")
+            force_guide = old is None or abs(float(old) - args.ortho) > 1e-3
+
     # --- 1. 指引图（必须含 flat，颜色锚定的基准）---
     print("[1/5] 渲指引图", flush=True)
     guide_py = ROOT / "tools" / "guidance.py"
     gcmd = [PY, guide_py, mesh, "--cameras", args.cameras,
-            "--indices", args.indices, "--out-dir", guide, *extra]
-    if not (guide / f"v{idx[0]:02d}_depth_c.png").is_file():
+            "--indices", args.indices, "--out-dir", guide,
+            *extra, *extra_ortho]
+    if force_guide or not (guide / f"v{idx[0]:02d}_depth_c.png").is_file():
         run([*gcmd, "--passes", "depth,normal,clay,beauty,flat"], quiet=True)
     elif any(not (guide / f"v{i:02d}_flat.png").is_file() for i in idx):
         print("  补渲 flat（颜色基准）", flush=True)
@@ -155,6 +190,10 @@ def main() -> int:
         print("  复用已有指引图", flush=True)
 
     # --- 2. Qwen 重绘 ---
+    if force_guide and args.reuse_views:
+        print("  ⚠ 画幅变了，--reuse-views 失效：旧视图与新 ProjUV 不同框，"
+              "必须重新生成", flush=True)
+        args.reuse_views = False
     print(f"[2/5] Qwen 按指引重绘（{args.steps} 步"
           f"{'+Lightning' if args.lightning else '，无 Lightning'}）", flush=True)
     if not args.reuse_views or not all((views / f"view_{i:02d}.png").is_file()
@@ -198,7 +237,7 @@ def main() -> int:
              "--views", ready, "--guide", guide,
              "--cameras", args.cameras, "--indices", args.indices,
              "--out", refined, "--protect", args.protect,
-             "--anchor", args.anchor, *extra])
+             "--anchor", args.anchor, *extra, *extra_ortho])
         bake_views, align = refined, "frame"
     else:
         print("[4/5] 跳过精修（--no-refine，旧路径）", flush=True)
@@ -211,7 +250,7 @@ def main() -> int:
            "--view-indices", args.indices,
            "--align", align, "--exponent", args.exponent,
            "--detail", args.detail, "--out", args.out,
-           "--work-dir", work / "bake", *extra]
+           "--work-dir", work / "bake", *extra, *extra_ortho]
     if align == "similarity":
         cmd += ["--guide-dir", guide]
     run(cmd)

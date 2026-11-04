@@ -39,6 +39,8 @@ def main() -> int:
     ap.add_argument("--cameras", type=int, default=4)
     ap.add_argument("--indices", default="0,1,2,3")
     ap.add_argument("--plan", help="相机方案 JSON；bbox 按它的方位角/俯仰角算")
+    ap.add_argument("--ortho", type=float, default=0.0,
+                    help="正交相机视野边长；0=默认 2.8，必须与 guidance/bake 一致")
     ap.add_argument("--size", type=int, default=0,
                     help="画布边长；0=跟随 beauty 尺寸")
     ap.add_argument("--protect", type=float, default=0.85,
@@ -103,7 +105,7 @@ def main() -> int:
         else:
             az, el = (cameras.angles_for(plan, i) if plan
                       else (360.0 * i / args.cameras, 0.0))
-            bbox = bake.projection_bbox(V, az, el)
+            bbox = bake.projection_bbox(V, az, el, ortho=args.ortho)
             ref_mask = None
             for cand in (f"{key}_depth_c.png", f"{key}_depth.png"):
                 if (gdir / cand).is_file():
