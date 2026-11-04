@@ -1,0 +1,25 @@
+# ---- 环境与权重（体积大、可复现） ----
+.venv/
+models/
+vendor/
+wheels/
+
+# ---- 产物与缓存 ----
+out/
+.tmp/
+in/
+input/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.log
+
+# ---- 模型/图片产物 ----
+*.glb
+*.gltf
+*.bin
+*.safetensors
+*.onnx
+
+# 文档里的截图要保留，所以不忽略 docs/img 下的 png
+!docs/img/**
