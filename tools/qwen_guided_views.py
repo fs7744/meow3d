@@ -62,13 +62,15 @@ PROMPT_EDIT = (
     "Full body from head to feet, even lighting, plain light gray background."
 )
 
-# 单图模式（--single）：只给彩图，不让模型看到第二张，从根上避免「拼两格」
+# 单图模式（默认）：只给彩图，不让模型看到第二张，从根上避免「拼两格」
 PROMPT_EDIT_SINGLE = (
-    "Repaint this 3D render as a finished character illustration. Keep the exact "
-    "pose, camera angle and framing. Same clothing and armor, same colors, same "
-    "hair, same face. One single character only, no collage, no split screen, no "
-    "duplicated figure. Full body from head to feet, even lighting, plain light "
-    "gray background."
+    "Clean up and refine this 3D character render into crisp finished game art. "
+    "KEEP the exact same art style, the exact same color palette and brightness, "
+    "and the exact same pose, camera angle and framing. Do not make it realistic "
+    "or photographic, do not brighten it, do not change the hair color or the "
+    "outfit colors. Only sharpen edges, remove texture seams and smudges, and add "
+    "clean surface detail. One single character only, no collage, no split screen, "
+    "no duplicated figure. Full body from head to feet, plain light gray background."
 )
 
 PROMPT_CONTROL = (
@@ -125,6 +127,12 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no-lightning", action="store_true",
                     help="不挂 8 步蒸馏 LoRA（更慢更准，步数用 --steps）")
+    ap.add_argument("--lora", action="append", default=[],
+                    help="额外 LoRA，形如 名称:强度，可重复。例如 "
+                         "VNCCS_QI2_AnimeOverhaulV2:0.8 —— **风格 LoRA 很关键**："
+                         "不带它时 Qwen 会把网格渲的赛璐璐图重绘成半写实，"
+                         "颜色变淡、锐度掉一档")
+    ap.add_argument("--prompt", help="覆盖默认提示词")
     ap.add_argument("--compare", action="store_true", help="额外出对照拼图")
     args = ap.parse_args()
 
@@ -157,12 +165,23 @@ def main() -> int:
 
     if not args.no_lightning:
         try:
-            eng.apply_loras(pipe, [{"name": "qwen21_lightning", "scale": 1.0}],
-                            scope="temp")
+            specs = [{"name": "qwen21_lightning", "scale": 1.0}]
+            for spec in args.lora:
+                name, _, sc = spec.partition(":")
+                specs.append({"name": name, "scale": float(sc or 1.0)})
+            eng.apply_loras(pipe, specs, scope="temp")
             args.steps = min(args.steps, 8)
-            print("  已挂 Lightning LoRA（8 步）", flush=True)
+            print(f"  已挂 LoRA {[s['name'] for s in specs]}（{args.steps} 步）",
+                  flush=True)
         except Exception as e:  # noqa: BLE001
-            print(f"  Lightning 挂载失败（不致命）: {e}", flush=True)
+            print(f"  LoRA 挂载失败（不致命）: {e}", flush=True)
+    elif args.lora:
+        specs = []
+        for spec in args.lora:
+            name, _, sc = spec.partition(":")
+            specs.append({"name": name, "scale": float(sc or 1.0)})
+        eng.apply_loras(pipe, specs, scope="temp")
+        print(f"  已挂 LoRA {[s['name'] for s in specs]}", flush=True)
 
     pipe.set_progress_bar_config(disable=True)
     vae = pipe.vae
