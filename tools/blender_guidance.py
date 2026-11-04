@@ -12,6 +12,11 @@
   <key>_normal.png  世界空间法线编码成 RGB（n*0.5+0.5）
   <key>_clay.png    素模渲染（EEVEE，studio 光 + cavity），做 lineart/canny 的源
   <key>_beauty.png  带原贴图的渲染（EEVEE），当「Image Edit 的底图」用
+  <key>_flat.png    baseColor 直出（Emission，无光照），当颜色锚定的**可信基准**用
+
+⚠️ beauty 与 flat 不能混用：beauty 带灯光和高光，把它当颜色基准写进贴图，
+渲染时又被打一次光 → 整体发灰发亮。StableGen 的 `export_emit_image` 也是
+用 Emission 渲上下文，不是带灯光的 beauty。
 
 同框的含义：相机固定为 ORTHO=2.8、距离 3.5、看向原点，模型归一化到 [-1,1]，
 于是渲染图里模型占的像素范围与 `bake.projection_bbox()` 算出的 [0,1]² 框**逐像素
@@ -38,7 +43,8 @@ CAM_DIST = 3.5
 DEPTH_NEAR = 2.0                    # 与 blender_bake_views.py 同一套归一化区间
 DEPTH_FAR = 5.0
 WORK = os.path.abspath(CFG["work_dir"])
-PASSES = list(CFG.get("passes", ["depth", "normal", "clay", "beauty"]))
+PASSES = list(CFG.get("passes",
+                      ["depth", "normal", "clay", "beauty", "flat"]))
 os.makedirs(WORK, exist_ok=True)
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -169,6 +175,61 @@ def render_clay(path):
     print("GUIDE clay", path, flush=True)
 
 
+def flat_material(src, name):
+    """用原材质的 baseColorTexture 建一个纯 Emission 材质（无灯光、无高光）。"""
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    em = nt.nodes.new("ShaderNodeEmission")
+    em.inputs["Strength"].default_value = 1.0
+    nt.links.new(em.outputs["Emission"], out.inputs["Surface"])
+    img = None
+    if src is not None and src.use_nodes:
+        # GLB 导入的 Principled BSDF 只有一张 baseColorTexture 接到 Base Color
+        for n in src.node_tree.nodes:
+            if n.type == "TEX_IMAGE" and n.image is not None:
+                img = n.image
+                break
+    if img is not None:
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.image = img
+        uvn = nt.nodes.new("ShaderNodeUVMap")
+        nt.links.new(uvn.outputs["UV"], tex.inputs["Vector"])
+        nt.links.new(tex.outputs["Color"], em.inputs["Color"])
+    else:
+        em.inputs["Color"].default_value = (0.8, 0.8, 0.8, 1.0)
+    return m
+
+
+def render_flat(path):
+    """baseColor 直出：StableGen `export_emit_image` 的等价物。
+
+    颜色锚定必须拿它当基准，而不是带灯光的 beauty。渲完立刻还原材质，
+    否则下一个机位的 beauty 也会变成无光照的。
+    """
+    scene.use_nodes = False
+    set_engine("BLENDER_EEVEE_NEXT")
+    saved, cache = [], {}
+    for obj in meshes:
+        for slot in obj.material_slots:
+            src = slot.material
+            saved.append((slot, src))
+            key = src.name if src else "__none__"
+            if key not in cache:
+                cache[key] = flat_material(src, f"flat_{key}")
+            slot.material = cache[key]
+    scene.render.image_settings.color_mode = "RGB"
+    scene.render.filepath = path
+    try:
+        bpy.ops.render.render(write_still=True)
+    finally:
+        for slot, src in saved:
+            slot.material = src
+    print("GUIDE flat", path, flush=True)
+
+
 for c in CFG["cameras"]:
     key = c["name"]
     az = math.radians(float(c.get("azimuth", 0)))
@@ -197,5 +258,7 @@ for c in CFG["cameras"]:
         scene.render.filepath = os.path.join(WORK, f"{key}_beauty.png")
         bpy.ops.render.render(write_still=True)
         print("GUIDE beauty", scene.render.filepath, flush=True)
+    if "flat" in PASSES:
+        render_flat(os.path.join(WORK, f"{key}_flat.png"))
 
 print("GUIDE ALL DONE", flush=True)

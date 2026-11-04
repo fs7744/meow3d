@@ -193,6 +193,42 @@ IoU 0.66~0.83。
 塞进去，Qwen 会时不时画成「左原图 / 右结果」的两格拼图（汉服两次都中招），
 飘带一重叠连自动切分都救不回来。要试两张用 `--two-images`。
 
+### 受保护精修（2026-11-05，对齐 StableGen 的 sequential 语义）
+
+**Qwen 输出应该是「补丁」不是「整张新贴图」**。旧 `run_guided.py` 把四个机位
+各自整幅重绘再全图替换，8 步 Lightning 的画风漂移被 100% 继承；而且起点是
+**已带贴图的 GLB**（StableGen 是白模），整幅重绘本身就是净损失。
+
+```bash
+# 一条命令：指引图(含 flat) → Qwen 20步 → 抠图 → 保护性精修 → bake
+.venv/Scripts/python.exe tools/run_guided.py out/meow3d/asuka_Textured_00001_.glb \
+    --reference out/in/asuka.png --out out/meow3d/asuka_guided.glb
+
+# 复用已生成的视图，只重跑精修 + bake（20s）
+.venv/Scripts/python.exe tools/run_guided.py <网格.glb> --reference <原图.png> \
+    --out out/xxx.glb --reuse-views
+
+# 白模路线（没有可信贴图）→ 让 Qwen 当唯一颜色来源
+.venv/Scripts/python.exe tools/run_guided.py <白模.glb> --reference <原图.png> \
+    --out out/xxx.glb --protect 0
+```
+
+新链路多两步：`tools/guidance.py` 增加 **`flat` pass**（Emission 直出 = 贴图
+原色），`tools/refine_views.py` 用它做 YUV 颜色锚定 + 局部清晰度门控的
+受保护合成，输出同框 RGBA，bake 改走 `--align frame`。
+
+⚠️ **颜色基准只能用 flat，不能用 beauty**：beauty 带灯光高光，写进贴图后
+渲染会被二次打光。实测换成 flat 后，贴图相对原生的平均 |ΔRGB| 从 0.1755
+降到 **0.0816（-53.5%）**、p90 从 0.3765 降到 0.2000，颜色均值基本回到原生。
+`--protect 0.85` 时只改写约 22% 的前景像素。
+
+默认采样也改成 **20 步 / 无 Lightning**（StableGen `QWEN 2.1 PRECISE`）：
+单张 1024² 实跑 22.0s（8 步约 4s），与 flat 基准的色差 0.2264 → **0.1681**，
+发色/战服红/五官明显更贴近原设计。要退回旧行为用 `--no-refine --lightning`。
+
+完整源码级差距清单与优先级见 `docs/路线相同但效果较差-源码级定位与改进.md`。
+全量单测 **40 passed**（`tests/test_refine.py` 新增 7 条，纯 numpy 无 GPU）。
+
 ### v1（legacy：UV texel 反向映射）
 
 `tools/project_texture.py` 的 `replace` 模式仍可用（正面原图直贴，1.9s），但

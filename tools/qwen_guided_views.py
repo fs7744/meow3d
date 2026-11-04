@@ -137,6 +137,11 @@ def main() -> int:
     args = ap.parse_args()
 
     size = args.size // 32 * 32
+    if not args.two_images:
+        print("  单图模式：--ref 只作记录，**不参与生成**（只喂 beauty 底图）；"
+              "原设计的颜色由后续 refine_views.py 的 flat 基准承载。\n"
+              "  要把外部设计图强行注入用 --two-images（实测有「两格拼图」风险）",
+              flush=True)
     indices = [int(x) for x in args.indices.split(",") if x.strip()]
     outdir = Path(args.out_dir)
     outdir.mkdir(parents=True, exist_ok=True)

@@ -6,7 +6,7 @@
     # 只有 8 机位里的正/右/背/左
     python tools/guidance.py out/meow3d/knight.glb --cameras 8 --indices 0,2,4,6
 
-产物落 `--out-dir`（默认 `.tmp/guide_<网格名>`），每个机位 5 个文件：
+产物落 `--out-dir`（默认 `.tmp/guide_<网格名>`），每个机位 6 个文件：
 
 | 文件 | 用途 |
 |---|---|
@@ -15,6 +15,10 @@
 | `v00_normal.png` | 法线编码 RGB（排查几何用） |
 | `v00_clay.png` | 素模（可做 lineart / 人眼检查） |
 | `v00_beauty.png` | 带原贴图的彩图（`qwen_guided_views.py --mode beauty` 的底图） |
+| `v00_flat.png` | **baseColor 直出（Emission，无光照）**：颜色锚定的可信基准 |
+
+⚠️ `beauty` 带灯光高光，只能给 Qwen 当构图底图；**颜色基准必须用 `flat`**，
+否则贴图会被写上「已经打过光的颜色」，渲染时二次打光 → 发灰发亮。
 """
 from __future__ import annotations
 
@@ -36,7 +40,7 @@ def main() -> int:
     ap.add_argument("--indices", default="", help="取哪些机位，如 0,2,4,6；留空=全部")
     ap.add_argument("--size", type=int, default=1024, help="输出边长（与 bake 同框）")
     ap.add_argument("--elevation", type=float, default=0.0)
-    ap.add_argument("--passes", default="depth,normal,clay,beauty",
+    ap.add_argument("--passes", default="depth,normal,clay,beauty,flat",
                     help="要渲哪些通道，逗号分隔")
     ap.add_argument("--sheet", action="store_true", help="额外拼 4 联对照图")
     args = ap.parse_args()

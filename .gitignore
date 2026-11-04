@@ -7,6 +7,7 @@ wheels/
 # ---- 产物与缓存 ----
 out/
 .tmp/
+.workbuddy/
 in/
 input/
 .pytest_cache/

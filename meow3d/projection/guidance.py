@@ -23,7 +23,7 @@ from PIL import Image
 
 from .bake import ROOT, ORTHO, blender_exe
 
-PASSES = ("depth", "normal", "clay", "beauty")
+PASSES = ("depth", "normal", "clay", "beauty", "flat")
 
 
 def camera_list(count: int, indices: Sequence[int] | None = None,
