@@ -54,7 +54,13 @@ ANGLE_WORD = {0: "front view", 90: "right side profile view",
 PROMPT_EDIT = (
     "Two separate input images. The FIRST is a character design reference. "
     "The SECOND is a 3D render whose pose, camera angle and framing must be kept "
-    "exactly as-is. Output ONE single image containing ONLY the character from the "
+    "exactly as-is. "
+    "CRITICAL POSE CONSTRAINT: the 3D mesh is in a STRICT T-POSE — BOTH arms are "
+    "stretched straight out horizontally to the sides, perpendicular to the torso. "
+    "This must be preserved in EVERY view. In side/profile views the arms overlap "
+    "the body and appear as short horizontal bars: do NOT lower, bend, fold, hide "
+    "or shorten the arms, and do NOT draw a relaxed standing pose. "
+    "Output ONE single image containing ONLY the character from the "
     "second image, re-textured to match the design of the first image: same clothing "
     "and armor, same colors, same hair, same face. "
     "Do NOT put the two images side by side. No collage, no split screen, no "
@@ -117,6 +123,10 @@ def main() -> int:
     ap.add_argument("--indices", default="0,1,2,3")
     ap.add_argument("--plan", help="相机方案 JSON（tools/plan_cameras.py）；"
                                    "按它的方位角/俯仰角写提示词，不靠等分环推算")
+    ap.add_argument("--guide-pass", default="beauty",
+                    choices=("beauty", "clay", "normal", "depth_c"),
+                    help="结构底图。白模 beauty 是纯白，侧视 T-pose 手臂几乎看不见；"
+                         "clay 素模带明暗/cavity，几何轮廓更清楚")
     ap.add_argument("--two-images", action="store_true",
                     help="同时给参考图与彩图。**默认不给**：两张全身站姿图一起进来时，"
                          "Qwen 会时不时画成「左原图右结果」的两格拼图，飘带一重叠就连"
@@ -201,7 +211,9 @@ def main() -> int:
     for i in indices:
         key = f"v{i:02d}"
         g = gdir
-        beauty = g / f"{key}_beauty.png"
+        beauty = g / f"{key}_{args.guide_pass}.png"
+        if not beauty.is_file():
+            beauty = g / f"{key}_beauty.png"
         depth = g / f"{key}_depth_c.png"
         if args.mode in ("control", "both") and not depth.is_file():
             depth = g / f"{key}_depth.png"

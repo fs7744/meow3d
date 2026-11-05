@@ -74,7 +74,7 @@ def main() -> int:
                     help="正交相机视野边长；0=默认 2.8。会同步传给 guidance/refine/bake")
     ap.add_argument("--fill-frame", action="store_true",
                     help="按模型在所有机位下的最大投影跨度自动收紧画幅，"
-                         "让角色占满 1024² 视图（头部有效像素约 +30%）")
+                         "让角色占满 1024² 视图（头部有效像素约 +30%%）")
     ap.add_argument("--frame-margin", type=float, default=1.08,
                     help="--fill-frame 的留边系数；别低于 1.05，"
                          "扩散模型容易裁掉贴边的头发/脚尖")
@@ -90,6 +90,10 @@ def main() -> int:
                     help="额外 LoRA 名称:强度，可重复")
     ap.add_argument("--two-images", action="store_true",
                     help="把参考图一起喂给 Qwen（有拼图风险，默认关）")
+    ap.add_argument("--guide-pass", default=None,
+                    choices=("beauty", "clay", "normal", "depth_c"),
+                    help="Qwen 的结构底图；白模默认 clay（素模能看清 T-pose 手臂，"
+                         "纯白 beauty 会让侧视图把手臂画成收拢站姿）")
     ap.add_argument("--exponent", type=float, default=8.0,
                     help="cos^k 权重指数；StableGen 生成后默认 15，3 会明显发糊")
     ap.add_argument("--protect", type=float, default=0.85,
@@ -117,10 +121,13 @@ def main() -> int:
         if args.unwrap == "keep":
             args.unwrap = "smart"
         args.two_images = True
+        if args.guide_pass is None:
+            args.guide_pass = "clay"
         if args.decimate is None:
             args.decimate = 50000
         print("白模路线：protect=0、unwrap="
-              f"{args.unwrap}、双图注入参考图、降面 {args.decimate or '关闭'}"
+              f"{args.unwrap}、双图注入参考图、结构底图 {args.guide_pass}、"
+              f"降面 {args.decimate or '关闭'}"
               "（refine 自动跳过颜色锚定）", flush=True)
 
     mesh = Path(args.mesh).resolve()
@@ -224,6 +231,8 @@ def main() -> int:
                 "--cameras", args.cameras, "--indices", args.indices,
                 "--size", args.size, "--steps", args.steps,
                 "--out-dir", views, *extra]
+        if args.guide_pass:
+            qcmd += ["--guide-pass", args.guide_pass]
         if not args.lightning:
             qcmd.append("--no-lightning")
         if args.two_images:
