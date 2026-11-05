@@ -652,6 +652,27 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
     elif fill == "base" and verbose:
         print("  unwrap != keep：底图与 BakeUV 不同坐标系，改用扩散填充", flush=True)
     merged = merge(work, size, base, blend, detail)
+    # 真实覆盖：全图数字会被 bake margin 的「岛外扩张色」虚高，必须分开看
+    try:
+        from . import uvstats
+        cov = np.asarray(Image.open(work / "mask.png").convert("L")) > 127
+        uv_src = work / "baked_uv.glb"
+        if not uv_src.is_file():
+            uv_src = mesh          # keep 模式：直接用输入 GLB 的 UV
+        isl = uvstats.island_mask(uv_src, size)
+        st = uvstats.coverage_stats(cov, isl)
+        merged.update(st)
+        if verbose and st["uv_usage"] is not None:
+            print(f"  UV 岛占用 {st['uv_usage']:.1%}，"
+                  f"岛内有效覆盖 {st['coverage_uv']:.1%}，"
+                  f"岛外虚高 {st['coverage_ghost']:.1%}", flush=True)
+            if (margin >= 16 and st["coverage_ghost"] is not None
+                    and st["coverage_ghost"] > st["coverage_uv"]):
+                print("  ⚠ margin 较大：新增覆盖大多落在 UV 岛外空白 texel，"
+                      "渲染时不采样，不等于画质提升", flush=True)
+    except (OSError, ValueError, KeyError) as e:
+        if verbose:
+            print(f"  UV 覆盖统计跳过（不致命）：{e}", flush=True)
     if verbose:
         print(f"  合并完成：覆盖 {merged['coverage']:.1%}，"
               f"混合 {merged['blend']}，空洞兜底 {merged['fallback']}，"

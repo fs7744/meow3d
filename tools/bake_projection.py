@@ -77,6 +77,14 @@ def main() -> int:
     ap.add_argument("--reproject", action="store_true",
                     help="复用已烘焙的 npy，只重算合并与导出")
     args = ap.parse_args()
+    # 实测会触发 Blender EXCEPTION_ACCESS_VIOLATION 的组合，提前提醒而不是
+    # 让用户对着 exit code 11 猜（bake.py 的 check=True 只会抛 CalledProcessError）
+    if args.unwrap == "cube" and args.size >= 2048:
+        print("⚠ cube + 2048² 实测让 Blender 崩溃（exit 11）；"
+              "改用 --size 1024 或 --unwrap smart", flush=True)
+    if 0 < args.decimate < 30000:
+        print("⚠ 降面低于 3 万实测让 Blender 崩溃（exit 11）；"
+              "建议 --decimate 50000", flush=True)
 
     views = []
     align = args.align
@@ -137,6 +145,10 @@ def main() -> int:
     print(f"\n完成：{res['path']}（{res.get('out_size', 0) / 1e6:.1f}MB）")
     print(f"  视图 {res['views']} 个，覆盖 {res['coverage']:.1%}，"
           f"导出方式 {res.get('export', '?')}，缓存 {res['work_dir']}")
+    if res.get("uv_usage") is not None:
+        print(f"  真实覆盖：UV 岛占用 {res['uv_usage']:.1%}，"
+              f"岛内有效 {res['coverage_uv']:.1%}，"
+              f"岛外虚高 {res['coverage_ghost']:.1%}")
     return 0
 
 

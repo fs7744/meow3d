@@ -102,6 +102,8 @@ def main() -> int:
     ap.add_argument("--unwrap", default="keep",
                     choices=("keep", "cube", "smart", "auto"),
                     help="UV 策略，传给 bake；白模（无贴图无 UV）必须用 smart/cube")
+    ap.add_argument("--decimate", type=int, default=None,
+                    help="降面目标（传给 bake）；白模默认 5 万，--decimate 0 关闭")
     ap.add_argument("--white-mesh", action="store_true",
                     help="白模路线：自动设 protect=0 / unwrap=smart / 双图注入参考图。"
                          "Qwen 是唯一颜色来源，refine 会自动跳过颜色锚定")
@@ -115,9 +117,11 @@ def main() -> int:
         if args.unwrap == "keep":
             args.unwrap = "smart"
         args.two_images = True
+        if args.decimate is None:
+            args.decimate = 50000
         print("白模路线：protect=0、unwrap="
-              f"{args.unwrap}、双图注入参考图（refine 自动跳过颜色锚定）",
-              flush=True)
+              f"{args.unwrap}、双图注入参考图、降面 {args.decimate or '关闭'}"
+              "（refine 自动跳过颜色锚定）", flush=True)
 
     mesh = Path(args.mesh).resolve()
     ref = Path(args.reference).resolve()
@@ -268,6 +272,8 @@ def main() -> int:
            "--work-dir", work / "bake", *extra, *extra_ortho]
     if align == "similarity":
         cmd += ["--guide-dir", guide]
+    if args.decimate is not None:
+        cmd += ["--decimate", args.decimate]
     run(cmd)
     print(f"\n完成：{args.out}", flush=True)
     return 0
