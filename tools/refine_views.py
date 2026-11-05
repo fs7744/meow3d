@@ -47,6 +47,12 @@ def main() -> int:
                     help="保留底图强度 0~1；带贴图 GLB 建议 0.8~1，白模用 0")
     ap.add_argument("--anchor", type=float, default=1.0,
                     help="颜色锚定强度 0~1；0=不做（保留 Qwen 原色调）")
+    ap.add_argument("--align-scale", choices=("area", "height"), default="area",
+                    help="similarity 对齐的尺度初值口径；T-pose 侧视手臂长度变化大时"
+                         "用 height（躯干高度稳定），默认 area 保持旧行为")
+    ap.add_argument("--core-iou", action="store_true",
+                    help="腐蚀掉手臂/头发只用躯干核心算 IoU，避免细长部件长度变化"
+                         "主导对齐；最终输出仍用原图")
     ap.add_argument("--base", choices=("auto", "flat", "beauty"), default="auto",
                     help="颜色/纹理基准：flat=Emission 直出（推荐），beauty=带灯光渲染")
     ap.add_argument("--no-align", action="store_true",
@@ -112,7 +118,8 @@ def main() -> int:
                     ref_mask = gdir / cand
                     break
             info = bake.make_similarity_aligned_view(
-                src, aligned, bbox, size=size, ref_mask=ref_mask)
+                src, aligned, bbox, size=size, ref_mask=ref_mask,
+                scale_mode=args.align_scale, core_iou=args.core_iou)
 
         beauty = refine.load_rgb(bp)
         if beauty.shape[0] != size:
@@ -147,7 +154,8 @@ def main() -> int:
         report["views"].append(entry)
         tail = (f"色偏 ΔY {stats['channels'][0]['delta']:+.3f}"
                 if stats.get("channels") else "白模·跳过颜色锚定")
-        print(f"  {key}: 前景 {mask.mean():.1%}，对齐 IoU {info.get('iou', '-')}，"
+        print(f"  {key}: 前景 {mask.mean():.1%}，对齐 IoU {info.get('iou', '-')}"
+              f"（全轮廓 {info.get('iou_full', '-')}），"
               f"平均改写权重 {stats['mean_weight']:.3f}，{tail}"
               f" → {dst.name}", flush=True)
 

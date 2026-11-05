@@ -200,7 +200,9 @@ def _split_side_by_side(mask: np.ndarray,
 def make_similarity_aligned_view(src: str | Path, dst: str | Path,
                                  bbox: Sequence[float], size: int = 1024,
                                  ref_mask: Optional[str | Path] = None,
-                                 refine: bool = True) -> Dict[str, Any]:
+                                 refine: bool = True,
+                                 scale_mode: str = "area",
+                                 core_iou: bool = False) -> Dict[str, Any]:
     """把生成图的主体做**相似变换**（等比缩放 + 平移，不改长宽比）对齐到模型投影框。
 
     为什么不能像 `make_aligned_view` 那样 x/y 各自拉满：Qwen 出图的宽高比本来就
@@ -257,11 +259,14 @@ def make_similarity_aligned_view(src: str | Path, dst: str | Path,
     else:
         s_bbox = 1.0
 
-    # 尺度初值：有指引轮廓时用**面积比**（sqrt），没有才退回包围盒高度比。
-    # 面积比对「轮廓上多出来的一小块」（披风边缘、影子）不敏感，而高度比对它
-    # 极敏感 —— 多 30px 就会把整个人算小 15%。
+    # 尺度初值两种口径：
+    # * area   —— 面积比 sqrt，对轮廓上多出的一小块（披风、影子）不敏感，
+    #             但**手臂伸出/收起会显著改变面积**，clay 侧视图会被算小；
+    # * height —— 包围盒高度比，躯干高度稳定，但对头顶/脚尖多出 30px 敏感。
+    # 默认 area 保持旧行为；T-pose 侧视手臂长度变化时用 height 更稳。
     s0 = s_bbox
-    if ref is not None and ref.any() and m_size.any():
+    if (scale_mode == "area" and ref is not None and ref.any()
+            and m_size.any()):
         s0 = float(np.sqrt(ref.sum() / m_size.sum()))
 
     # IoU 搜索在 1/SS 分辨率上做：1024² 上全画幅逐像素滑窗要几秒，缩到 1/4 后
@@ -306,23 +311,37 @@ def make_similarity_aligned_view(src: str | Path, dst: str | Path,
         dx = int(round((tx0 + tx1) / 2 - (xs.min() + xs.max()) / 2))
         dy = int(round(ty1 - ys.max() - 1))
         if ref_s is None:
-            best = (s, dx, dy, 1.0)
+            best = (s, dx, dy, 1.0, 1.0)
             break
         ms = np.asarray(Image.fromarray(m.astype(np.uint8) * 255)
                         .resize((max(1, sw // SS), max(1, sw // SS)),
                                 Image.NEAREST)) > 127
+        # 核心对齐：Qwen 侧视图里细长的手臂/头发长度变化很大，全轮廓 IoU
+        # 会被它们主导（实测 v03 只有 0.40）。腐蚀后只剩躯干核心，尺度/平移
+        # 估计更稳；最终输出仍用未腐蚀的原图，只是变换参数由核心决定。
+        if core_iou:
+            kernel = np.ones((3, 3), np.uint8)
+            rc = cv2.erode(ref_s.astype(np.uint8), kernel,
+                           iterations=2).astype(bool)
+            mc = cv2.erode(ms.astype(np.uint8), kernel,
+                           iterations=2).astype(bool)
+            use_ref, use_ms = (rc, mc) if rc.any() and mc.any() else (ref_s, ms)
+        else:
+            use_ref, use_ms = ref_s, ms
         bx, by = int(round(dx / SS)), int(round(dy / SS))
         # 两级搜索：粗扫 ±8% 画幅（Qwen 的构图漂移实测能到 0.1 画幅），
         # 再在粗解附近 ±1 细修。
         coarse = max(1, S // 64)
-        score, x0, y0 = _search(ms, ref_s, bx, by, max(4, S // 12), coarse)
-        score, x0, y0 = _search(ms, ref_s, x0, y0, coarse, 1)
+        score, x0, y0 = _search(use_ms, use_ref, bx, by, max(4, S // 12), coarse)
+        score, x0, y0 = _search(use_ms, use_ref, x0, y0, coarse, 1)
         if best is None or score > best[3]:
-            best = (s, x0 * SS, y0 * SS, score)
+            # iou_full 用全轮廓重算，保证不同对齐口径之间可比
+            best = (s, x0 * SS, y0 * SS, score,
+                    _iou(_place(ms, x0, y0), ref_s))
     if best is None:
         raise RuntimeError("相似变换对齐失败")
 
-    s, dx, dy, score = best
+    s, dx, dy, score, iou_full = best
     sw = max(1, int(round(size * s)))
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     canvas.paste(im.resize((sw, sw), Image.LANCZOS), (dx, dy))
@@ -333,7 +352,9 @@ def make_similarity_aligned_view(src: str | Path, dst: str | Path,
             "source_box": [sx0, sy0, sx1, sy1],
             "target_box": [dx, dy, dx + sw, dy + sw],
             "scale": round(float(s), 4), "iou": round(float(score), 4),
-            "align": "similarity", "split": split}
+            "iou_full": round(float(iou_full), 4),
+            "iou_mode": "core" if core_iou else "full",
+            "align": "similarity", "scale_mode": scale_mode, "split": split}
 
 
 def make_frame_aligned_view(src: str | Path, dst: str | Path,
@@ -590,7 +611,9 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
                                        ortho=ortho_eff)
                 if how == "similarity":
                     info = make_similarity_aligned_view(
-                        v["image"], dst, bbox, size, v.get("ref_mask"))
+                        v["image"], dst, bbox, size, v.get("ref_mask"),
+                        scale_mode=v.get("align_scale", "area"),
+                        core_iou=bool(v.get("core_iou", False)))
                 else:
                     info = make_aligned_view(v["image"], dst, bbox, size)
             cfg_views[v["name"]] = {

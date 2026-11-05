@@ -73,6 +73,10 @@ def main() -> int:
                          "frame=已与 ProjUV 同框，原样铺满")
     ap.add_argument("--guide-dir",
                     help="--align similarity 的轮廓基准（tools/guidance.py 的输出目录）")
+    ap.add_argument("--align-scale", choices=("area", "height"), default="area",
+                    help="similarity 尺度初值口径；侧视手臂长度变化大时用 height")
+    ap.add_argument("--core-iou", action="store_true",
+                    help="只用躯干核心算对齐 IoU，避免手臂/头发长度变化主导")
     ap.add_argument("--work-dir", help="缓存目录（含对齐视图与 bake 结果）")
     ap.add_argument("--reproject", action="store_true",
                     help="复用已烘焙的 npy，只重算合并与导出")
@@ -108,7 +112,8 @@ def main() -> int:
                       else (360.0 * i / args.cameras, 0.0))
             v = {"name": f"v{i:02d}", "image": str(p),
                  "azimuth": az, "elevation": el,
-                 "align": align}
+                 "align": align, "align_scale": args.align_scale,
+                 "core_iou": args.core_iou}
             if align == "similarity" and guide_dir is not None:
                 # 指引图的深度通道 = 模型在该机位的真实轮廓，做 IoU 基准
                 for cand in (f"v{i:02d}_depth_c.png", f"v{i:02d}_depth.png"):

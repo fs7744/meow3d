@@ -94,6 +94,10 @@ def main() -> int:
                     choices=("beauty", "clay", "normal", "depth_c"),
                     help="Qwen 的结构底图；白模默认 clay（素模能看清 T-pose 手臂，"
                          "纯白 beauty 会让侧视图把手臂画成收拢站姿）")
+    ap.add_argument("--align-scale", default=None,
+                    choices=("area", "height"),
+                    help="similarity 对齐的尺度口径；白模默认 height（躯干高度稳定，"
+                         "面积比会被伸出的手臂带偏）")
     ap.add_argument("--exponent", type=float, default=8.0,
                     help="cos^k 权重指数；StableGen 生成后默认 15，3 会明显发糊")
     ap.add_argument("--protect", type=float, default=0.85,
@@ -123,11 +127,13 @@ def main() -> int:
         args.two_images = True
         if args.guide_pass is None:
             args.guide_pass = "clay"
+        if args.align_scale is None:
+            args.align_scale = "height"
         if args.decimate is None:
             args.decimate = 50000
         print("白模路线：protect=0、unwrap="
               f"{args.unwrap}、双图注入参考图、结构底图 {args.guide_pass}、"
-              f"降面 {args.decimate or '关闭'}"
+              f"对齐尺度 {args.align_scale}、降面 {args.decimate or '关闭'}"
               "（refine 自动跳过颜色锚定）", flush=True)
 
     mesh = Path(args.mesh).resolve()
@@ -264,7 +270,8 @@ def main() -> int:
              "--views", ready, "--guide", guide,
              "--cameras", args.cameras, "--indices", args.indices,
              "--out", refined, "--protect", args.protect,
-             "--anchor", args.anchor, *extra, *extra_ortho])
+             "--anchor", args.anchor, *extra, *extra_ortho]
+             + (["--align-scale", args.align_scale] if args.align_scale else []))
         bake_views, align = refined, "frame"
     else:
         print("[4/5] 跳过精修（--no-refine，旧路径）", flush=True)
@@ -283,6 +290,8 @@ def main() -> int:
         cmd += ["--guide-dir", guide]
     if args.decimate is not None:
         cmd += ["--decimate", args.decimate]
+    if args.align_scale:
+        cmd += ["--align-scale", args.align_scale]
     run(cmd)
     print(f"\n完成：{args.out}", flush=True)
     return 0
