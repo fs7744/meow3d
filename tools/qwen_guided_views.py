@@ -144,6 +144,11 @@ def main() -> int:
                          "VNCCS_QI2_AnimeOverhaulV2:0.8 —— **风格 LoRA 很关键**："
                          "不带它时 Qwen 会把网格渲的赛璐璐图重绘成半写实，"
                          "颜色变淡、锐度掉一档")
+    ap.add_argument("--latent-lock-context",
+                    help="顺序生成：ctx render 路径模板，支持 {key}/{i}。"
+                         "与 --latent-lock-mask 同时给时启用 sampler 级 latent lock")
+    ap.add_argument("--latent-lock-mask",
+                    help="repair mask 路径模板（白=可去噪，黑=锁定），支持 {key}/{i}")
     ap.add_argument("--prompt", help="覆盖默认提示词")
     ap.add_argument("--compare", action="store_true", help="额外出对照拼图")
     args = ap.parse_args()
@@ -205,6 +210,11 @@ def main() -> int:
         print(f"  已挂 LoRA {[s['name'] for s in specs]}", flush=True)
 
     pipe.set_progress_bar_config(disable=True)
+    lock = None
+    if args.latent_lock_mask:
+        # 顺序生成：sampler 级 latent lock（StableGen graph_validation.py:104）
+        import qwen_latent_lock as _ll
+        lock = _ll.LatentLock(pipe, size)
     vae = pipe.vae
     vae_dtype = next(vae.parameters()).dtype
     done = []
@@ -262,14 +272,29 @@ def main() -> int:
             imgs = [ref_sq]
             prompt = PROMPT_CONTROL
         kw["image"] = imgs if len(imgs) > 1 else imgs[0]
+        if args.prompt:
+            # --prompt 以前定义了却没用（死参数）。顺序生成要靠它传
+            # 「保留非品红、只补品红」的 StableGen 原文提示词。
+            prompt = args.prompt.replace("{word}", word)
+
+        gen = torch.Generator("cuda").manual_seed(args.seed + i * 1000)
+        if lock is not None:
+            fmt = {"key": key, "i": i, "i02": f"{i:02d}"}
+            mask_p = Path(args.latent_lock_mask.format(**fmt))
+            if not mask_p.is_file():
+                print(f"  [{key}] latent lock 缺 repair mask {mask_p}，跳过该图")
+                continue
+            lock.set_mask(mask_p)
+            kw["callback_on_step_end"] = lock.callback
+            print(f"  [{key}] latent lock grid={lock.info['grid']} "
+                  f"repair={lock.info['repair']:.1%}", flush=True)
 
         try:
             t = time.time()
             out = pipe(prompt=prompt, width=size, height=size,
                        num_inference_steps=max(4, min(args.steps, 60)),
                        true_cfg_scale=1.0, negative_prompt=" ",
-                       generator=torch.Generator("cuda").manual_seed(
-                           args.seed + i * 1000),
+                       generator=gen,
                        output_resolution=size, **kw).images[0]
             dt = time.time() - t
         except torch.cuda.OutOfMemoryError:

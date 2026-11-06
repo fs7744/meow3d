@@ -55,7 +55,7 @@ def main() -> int:
                     choices=("BLENDER_EEVEE_NEXT", "CYCLES"),
                     help="bake 必须用 CYCLES（EEVEE Next 不支持 object.bake）")
     ap.add_argument("--unwrap", default="keep",
-                    choices=("keep", "cube", "smart", "auto"),
+                    choices=("keep", "cube", "smart", "basic", "auto"),
                     help="keep=保留原始不重叠 UV（默认，最干净）；cube/smart=重新展开")
     ap.add_argument("--fill", default="base", choices=("base", "diffuse"),
                     help="base=未覆盖 texel 用原生贴图兜底；diffuse=邻域扩散")

@@ -116,27 +116,68 @@ def cycles_passes():
     vl.use_pass_normal = True
 
 
+def _compositor(enabled):
+    """合成器开/关。
+
+    Blender 5.x 起合成器挂在 `Scene.compositing_node_group` 上，
+    `scene.use_nodes = False` **不再生效**：深度/法线渲过一次之后，
+    合成节点会残留，把后面的 beauty/flat 也替换成深度图（实测 beauty 均值
+    156 → 7.3，几乎全黑）。必须同时关 `render.use_compositing`。
+    """
+    scene.render.use_compositing = bool(enabled)
+    try:
+        scene.use_nodes = bool(enabled)
+    except AttributeError:
+        pass
+
+
 def comp_begin():
-    scene.use_nodes = True
+    """返回 (节点树, RenderLayers 节点, 输出 socket)。
+
+    Blender 5.x 把合成器从 `Scene.node_tree` 移到了 `Scene.compositing_node_group`，
+    并且删除了 `CompositorNodeComposite` / `CompositorNodeMapRange`。
+    不兼容会直接 AttributeError → 渲染 0 个机位（`--reuse-views` 会把这个失败掩盖）。
+    """
+    _compositor(True)
+    if hasattr(scene, "compositing_node_group"):
+        nt = scene.compositing_node_group
+        if nt is None:
+            nt = bpy.data.node_groups.new("SGCompositing", "CompositorNodeTree")
+            scene.compositing_node_group = nt
+        nt.nodes.clear()
+        if not any(s.name == "Image" for s in nt.interface.items_tree):
+            nt.interface.new_socket(name="Image", in_out="OUTPUT",
+                                    socket_type="NodeSocketColor")
+        rl = nt.nodes.new("CompositorNodeRLayers")
+        rl.scene = scene
+        out = nt.nodes.new("NodeGroupOutput")
+        return nt, rl, out.inputs["Image"]
+
     nt = scene.node_tree
     nt.nodes.clear()
     rl = nt.nodes.new("CompositorNodeRLayers")
     rl.scene = scene
     comp = nt.nodes.new("CompositorNodeComposite")
-    return nt, rl, comp
+    return nt, rl, comp.inputs["Image"]
 
 
 def render_depth(path):
     """近=白、远=黑。背景（Z 无交点）在 Cycles 里是极大值，MapRange 截到 0。"""
     nt, rl, comp = comp_begin()
-    mr = nt.nodes.new("CompositorNodeMapRange")
-    mr.use_clamp = True
+    if hasattr(bpy.types, "CompositorNodeMapRange"):
+        mr = nt.nodes.new("CompositorNodeMapRange")
+        mr.use_clamp = True
+        out_socket = mr.outputs["Value"]
+    else:
+        mr = nt.nodes.new("ShaderNodeMapRange")
+        mr.clamp = True
+        out_socket = mr.outputs["Result"]
     mr.inputs["From Min"].default_value = DEPTH_NEAR
     mr.inputs["From Max"].default_value = DEPTH_FAR
     mr.inputs["To Min"].default_value = 1.0        # 近 → 白
     mr.inputs["To Max"].default_value = 0.0        # 远 → 黑
     nt.links.new(rl.outputs["Depth"], mr.inputs["Value"])
-    nt.links.new(mr.outputs["Value"], comp.inputs["Image"])
+    nt.links.new(out_socket, comp)
     img_set = scene.render.image_settings
     img_set.color_mode = "BW"
     img_set.color_depth = "8"
@@ -149,7 +190,7 @@ def render_depth(path):
 def render_normal(path):
     nt, rl, comp = comp_begin()
     # Cycles 的 Normal pass 已经是 (n*0.5+0.5)，直接落盘即可
-    nt.links.new(rl.outputs["Normal"], comp.inputs["Image"])
+    nt.links.new(rl.outputs["Normal"], comp)
     scene.render.image_settings.color_mode = "RGB"
     scene.render.filepath = path
     bpy.ops.render.render(write_still=True)
@@ -160,7 +201,7 @@ def render_clay(path):
     """素模：workbench 单一灰色 + cavity，让沟槽/边缘显出来。"""
     # **必须关掉合成器**：前面渲 depth/normal 时挂的 RLayers 节点树还在，
     # workbench 下它没有 Normal/Z 输出 → 整张渲成黑的（实测踩过）。
-    scene.use_nodes = False
+    _compositor(False)
     scene.display.shading.light = "STUDIO"
     scene.display.shading.color_type = "SINGLE"
     scene.display.shading.single_color = (0.78, 0.78, 0.80)
@@ -210,7 +251,7 @@ def render_flat(path):
     颜色锚定必须拿它当基准，而不是带灯光的 beauty。渲完立刻还原材质，
     否则下一个机位的 beauty 也会变成无光照的。
     """
-    scene.use_nodes = False
+    _compositor(False)
     set_engine("BLENDER_EEVEE_NEXT")
     saved, cache = [], {}
     for obj in meshes:
@@ -253,7 +294,7 @@ for c in CFG["cameras"]:
     if "clay" in PASSES:
         render_clay(os.path.join(WORK, f"{key}_clay.png"))
     if "beauty" in PASSES:
-        scene.use_nodes = False        # 同上：别让合成器残留把彩图换成法线图
+        _compositor(False)        # 同上：别让合成器残留把彩图换成法线图
         set_engine("BLENDER_EEVEE_NEXT")
         scene.render.image_settings.color_mode = "RGB"
         scene.render.filepath = os.path.join(WORK, f"{key}_beauty.png")

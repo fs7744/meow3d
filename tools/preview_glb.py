@@ -1,6 +1,12 @@
 """渲染 GLB 四视角预览并拼成一张图。
 
     python tools/preview_glb.py out/meow3d/xxx.glb
+    python tools/preview_glb.py out/meow3d/xxx.glb --flat
+
+`--flat` 把 Base Color 直连 Emission、不打灯，用来判断**贴图本色**。
+带灯光的预览对低 roughness 的 PBR 材质会打出过曝白斑（2026-11-05 Asuka
+实测：roughness 39/255 时正/背面整片死白，FLAT 下完全正常），所以判断颜色
+必须看 FLAT 版；灯光版只用来看立体感与轮廓。
 """
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 BLENDER_CANDIDATES = [
+    Path(r"D:\GAMES_tool\blender-5.4.0-alpha+main.6f4fc760c138-windows.amd64-release\blender.exe"),
     Path(r"D:\code\gen\tools\blender\blender-4.5.9-windows-x64\blender.exe"),
     Path(r"D:\GAMES_tool\blender\blender.exe"),
 ]
@@ -20,10 +27,13 @@ LABELS = ["正面", "3/4 侧", "正侧", "背面"]
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("用法: python tools/preview_glb.py <模型.glb>")
+    argv = sys.argv[1:]
+    flat = "--flat" in argv
+    pos = [a for a in argv if not a.startswith("--")]
+    if not pos:
+        print("用法: python tools/preview_glb.py <模型.glb> [--flat]")
         return 2
-    glb = Path(sys.argv[1]).resolve()
+    glb = Path(pos[0]).resolve()
     if not glb.is_file():
         print("找不到", glb)
         return 2
@@ -33,13 +43,14 @@ def main() -> int:
         print("找不到 Blender，改 BLENDER_CANDIDATES")
         return 2
 
-    tmp = ROOT / ".tmp" / f"preview_{glb.stem}"
+    suffix = "_flat" if flat else ""
+    tmp = ROOT / ".tmp" / f"preview_{glb.stem}{suffix}"
     tmp.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [str(blender), "-b", "-P", str(ROOT / "tools" / "blender_preview.py"),
-         "--", str(glb), str(tmp)],
-        check=True,
-    )
+    cmd = [str(blender), "-b", "-P", str(ROOT / "tools" / "blender_preview.py"),
+           "--", str(glb), str(tmp)]
+    if flat:
+        cmd.append("flat")
+    subprocess.run(cmd, check=True)
 
     imgs = []
     for n in NAMES:
@@ -58,12 +69,13 @@ def main() -> int:
     sheet = Image.new("RGB", (cols * (w + pad) + pad, rows * (h + head + pad) + pad),
                       (24, 25, 28))
     d = ImageDraw.Draw(sheet)
+    prefix = "FLAT " if flat else ""
     for i, im in enumerate(imgs):
         x = pad + (i % cols) * (w + pad)
         y = pad + (i // cols) * (h + head + pad)
-        d.text((x + 6, y + 6), LABELS[i], fill=(230, 232, 236))
+        d.text((x + 6, y + 6), prefix + LABELS[i], fill=(230, 232, 236))
         sheet.paste(im, (x, y + head))
-    out = ROOT / "out" / f"{glb.stem}_views.png"
+    out = ROOT / "out" / f"{glb.stem}{suffix}_views.png"
     sheet.save(out)
     print("预览:", out)
     return 0

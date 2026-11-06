@@ -106,12 +106,18 @@ def _link_index(wf: Dict[str, Any]) -> Dict[int, List[int]]:
     return {int(l[0]): list(l) for l in wf.get("links", [])}
 
 
-def plan(wf: Dict[str, Any], *, overrides: Optional[Dict[int, List[Any]]] = None
+def plan(wf: Dict[str, Any], *, overrides: Optional[Dict[int, List[Any]]] = None,
+         kwargs_overrides: Optional[Dict[int, Dict[str, Any]]] = None
          ) -> List[Dict[str, Any]]:
-    """只做参数映射预览，不执行节点。用于核对 widgets 对齐，跑真模型前先看一眼。"""
+    """只做参数映射预览，不执行节点。用于核对 widgets 对齐，跑真模型前先看一眼。
+
+    kwargs_overrides 会像 execute() 一样覆盖 widget，方便 --plan 显示真正会
+    被执行的参数（例如按 StableGen 默认值对齐后的 texture_size）。
+    """
     boot = runtime.bootstrap()
     mappings = boot["mappings"]
     links = _link_index(wf)
+    kwargs_overrides = kwargs_overrides or {}
     out = []
     for node in wf.get("nodes", []):
         t, nid = node["type"], int(node["id"])
@@ -129,6 +135,8 @@ def plan(wf: Dict[str, Any], *, overrides: Optional[Dict[int, List[Any]]] = None
         elif t in mappings:
             kwargs = {**_widget_kwargs(mappings[t], node.get("widgets_values") or []),
                       **linked}
+            if nid in kwargs_overrides:
+                kwargs.update(kwargs_overrides[nid])
         else:
             kwargs = {"??UNKNOWN_NODE??": t}
         out.append({"id": nid, "type": t, "kwargs": kwargs})

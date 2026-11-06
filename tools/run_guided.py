@@ -72,6 +72,11 @@ def main() -> int:
     ap.add_argument("--max-elevation", type=float, default=30.0)
     ap.add_argument("--ortho", type=float, default=0.0,
                     help="正交相机视野边长；0=默认 2.8。会同步传给 guidance/refine/bake")
+    ap.add_argument("--align-views", default="frame",
+                    choices=("frame", "similarity", "bbox"),
+                    help="投影前对生成图做的 2D 对齐。默认 frame=不改变换，"
+                         "按相机投影 UV 直接采样（StableGen 的做法）；"
+                         "similarity/bbox 会按各自 bbox 缩放，是「重影」的根源")
     ap.add_argument("--fill-frame", action="store_true",
                     help="按模型在所有机位下的最大投影跨度自动收紧画幅，"
                          "让角色占满 1024² 视图（头部有效像素约 +30%%）")
@@ -79,7 +84,12 @@ def main() -> int:
                     help="--fill-frame 的留边系数；别低于 1.05，"
                          "扩散模型容易裁掉贴边的头发/脚尖")
     ap.add_argument("--size", type=int, default=1024,
-                    help="Qwen 出图边长。1024 而不是 768：768 贴进 2048 图集会被放大")
+                    help="视图分辨率 / Qwen 出图边长（1024 而不是 768：768 贴进 "
+                         "2048 图集会被放大）")
+    ap.add_argument("--atlas-size", type=int, default=2048,
+                    help="bake 出的 UV 图集边长。之前**一直没传下去**，白模路线"
+                         "被 bake_projection 的缺省卡在 1024²；StableGen 的 "
+                         "texture_resolution 是 2048（generator.py:1238-1248）")
     ap.add_argument("--steps", type=int, default=20,
                     help="采样步数。**默认 20**：对齐 StableGen QWEN 2.1 PRECISE "
                          "（20 步 / CFG1 / 无 Lightning）；8 步 Lightning 会把赛璐璐"
@@ -108,8 +118,8 @@ def main() -> int:
     ap.add_argument("--no-refine", action="store_true",
                     help="回到旧的「整幅重绘 + similarity 对齐」路径")
     ap.add_argument("--unwrap", default="keep",
-                    choices=("keep", "cube", "smart", "auto"),
-                    help="UV 策略，传给 bake；白模（无贴图无 UV）必须用 smart/cube")
+                    choices=("keep", "cube", "smart", "basic", "auto"),
+                    help="UV 策略，传给 bake；白模没有 UV 层，必须重展开（默认 basic）")
     ap.add_argument("--decimate", type=int, default=None,
                     help="降面目标（传给 bake）；白模默认 5 万，--decimate 0 关闭")
     ap.add_argument("--white-mesh", action="store_true",
@@ -220,6 +230,16 @@ def main() -> int:
     else:
         print("  复用已有指引图", flush=True)
 
+    # guidance.py 在 Blender 侧失败时仍会以 0 退出（曾经因为 5.x 合成器 API
+    # 变更只渲出 0 个机位），后续 matte 才报「缺 view_00.png」，很难定位。
+    # 这里直接检查产物，把失败挡在第一步。
+    missing_guide = [f"v{i:02d}" for i in idx
+                     if not (guide / f"v{i:02d}_clay.png").is_file()]
+    if missing_guide:
+        raise RuntimeError(
+            f"指引图缺失 {missing_guide}（guidance 报告 0 个机位时也会退出 0）。"
+            "先单独跑 tools/guidance.py 看 Blender 报错。")
+
     # --- 2. Qwen 重绘 ---
     if force_guide and args.reuse_views:
         print("  ⚠ 画幅变了，--reuse-views 失效：旧视图与新 ProjUV 不同框，"
@@ -263,7 +283,11 @@ def main() -> int:
         print(f"  view_{i:02d} 抠好", flush=True)
 
     # --- 4. 保护性精修 ---
-    bake_views, align = ready, "similarity"
+    # 默认 frame：生成图本来就是用**同一台相机**的指引图条件出来的，必须原样按
+    # 相机投影 UV 采样。用 similarity/bbox 会对每张图按各自 bbox 缩放，同一处细节
+    # 在 8 个视图里落到不同高度，混合后就是「重影/两个胸」。
+    # StableGen 全程不做 2D 重对齐（projection.py 只用相机投影 UV）。
+    bake_views, align = ready, args.align_views
     if not args.no_refine:
         print(f"[4/5] 保护性精修（protect={args.protect}）", flush=True)
         run([PY, ROOT / "tools" / "refine_views.py", mesh,
@@ -282,6 +306,7 @@ def main() -> int:
     cmd = [PY, ROOT / "tools" / "bake_projection.py", mesh,
            "--views-dir", bake_views, "--cameras", args.cameras,
            "--view-indices", args.indices,
+           "--size", args.atlas_size,
            "--align", align, "--exponent", args.exponent,
            "--detail", args.detail, "--unwrap", args.unwrap,
            "--out", args.out,

@@ -36,6 +36,9 @@ from . import glbpatch
 
 ROOT = Path(__file__).resolve().parents[2]
 BLENDER_CANDIDATES = [
+    # StableGen v0.5.0 的 Raycast shader 节点 / Object-Relative Projection 要 5.1+，
+    # 5.4 alpha 是用户指定版本；旧 4.5.9 留作兜底。
+    Path(r"D:\GAMES_tool\blender-5.4.0-alpha+main.6f4fc760c138-windows.amd64-release\blender.exe"),
     Path(r"D:\code\gen\tools\blender\blender-4.5.9-windows-x64\blender.exe"),
     Path(r"D:\GAMES_tool\blender\blender.exe"),
 ]
@@ -446,22 +449,53 @@ def prepare_atlas_for_patch(atlas_png: str | Path, mesh_path: str | Path,
     return Path(atlas_png)
 
 
-def _fill_holes(acc: np.ndarray, wsum: np.ndarray) -> np.ndarray:
-    """多尺度邻域均值扩散：小洞用近邻，大洞用更大范围均值，不用 cv2.inpaint
-    （后者对成片空洞会糊成一片）。"""
+def _fill_holes(acc: np.ndarray, wsum: np.ndarray,
+                islands: Optional[np.ndarray] = None) -> np.ndarray:
+    """补投影空洞。**绝不跨 UV 岛取色**。
+
+    之前的实现用 `cv2.boxFilter` 在整张图集上做最大 241px 的邻域均值。图集只有
+    ~45% 是 UV 岛、10 万个小岛挤在一起，于是一个手臂上的洞会被 241px 外的
+    头发/脸的颜色填掉 —— 表现就是「脸跑到手臂上」。
+
+    现在：先 3/7px 小核（仅岛内），剩下的岛内洞用**本岛已覆盖 texel 的均值**；
+    岛外 texel（表面永远不会采样）才用全图均值兜底。
+    """
     out = np.zeros_like(acc)
-    filled = wsum > 1e-4          # 单独维护 mask，别用「颜色是否为 0」判断（黑贴图会误判）
+    filled = wsum > 1e-4
     out[filled] = acc[filled] / wsum[filled, None]
-    for k in (3, 7, 15, 31, 61, 121, 241):
-        if filled.all():
-            break
-        num = cv2.boxFilter(acc, -1, (k, k), normalize=False)
-        den = cv2.boxFilter(wsum, -1, (k, k), normalize=False)[..., None]
-        cand = num / np.maximum(den, 1e-6)
-        take = (~filled) & (den[..., 0] > 1e-4)
-        out[take] = cand[take]
-        filled |= take
-    # 仍空的地方用全图均值兜底，避免黑洞
+    if filled.all():
+        return out
+
+    isl = None
+    if islands is not None:
+        cand = np.asarray(islands, bool)
+        if cand.shape == filled.shape:
+            isl = cand
+
+    if isl is not None:
+        for k in (3, 7):
+            if filled.all():
+                break
+            num = cv2.boxFilter(acc, -1, (k, k), normalize=False)
+            den = cv2.boxFilter(wsum, -1, (k, k), normalize=False)[..., None]
+            cand = num / np.maximum(den, 1e-6)
+            take = (~filled) & (den[..., 0] > 1e-4) & isl
+            out[take] = cand[take]
+            filled |= take
+
+        # 同一 UV 岛内的均值（连通域 = 岛）
+        n_lab, lab = cv2.connectedComponents(isl.astype(np.uint8), connectivity=4)
+        lab = np.where(isl, lab, 0)
+        cnt = np.bincount(lab[filled], minlength=n_lab).astype(np.float64)
+        hole = (~filled) & isl
+        if hole.any() and n_lab > 1:
+            for c in range(3):
+                s = np.bincount(lab[filled], weights=out[filled, c].astype(np.float64),
+                                minlength=n_lab)
+                mean = s / np.maximum(cnt, 1.0)
+                out[hole, c] = mean[lab[hole]]
+            filled |= hole
+
     if not filled.all():
         mean = out[filled].mean(0) if filled.any() else np.array([0.5] * 3, np.float32)
         out[~filled] = mean
@@ -493,7 +527,8 @@ def merge(work_dir: Path, size: int,
           base: Optional[np.ndarray] = None,
           blend: str = "weighted",
           detail: float = 0.0,
-          detail_sigma: float = 2.0) -> Dict[str, Any]:
+          detail_sigma: float = 2.0,
+          islands: Optional[np.ndarray] = None) -> Dict[str, Any]:
     vdir = work_dir / "views"
     colors, weights = [], []
     for p in sorted(vdir.glob("*_color.npy")):
@@ -527,7 +562,7 @@ def merge(work_dir: Path, size: int,
     else:
         # 只用扩散填**空洞**；不能整体覆盖，否则 winner 的单视角颜色
         # 会被悄悄换回加权平均（单测 test_merge_winner_* 钉住）。
-        diffuse = _fill_holes(acc, wsum)
+        diffuse = _fill_holes(acc, wsum, islands)
         atlas[~filled] = diffuse[~filled]
         fallback = "diffuse"
     if detail > 0 and base is not None and base.shape == atlas.shape:
@@ -555,11 +590,71 @@ def merge(work_dir: Path, size: int,
             "detail": detail_applied}
 
 
+def bake_views_only(mesh: str | Path, work_dir: str | Path,
+                    views: List[Dict[str, Any]],
+                    *, size: int, ortho: float = 0.0, exponent: float = 3.0,
+                    margin: int = 4, decimate: int = 0, engine: str = "CYCLES",
+                    unwrap: str = "keep", occlude: bool = True,
+                    feather: float = 0.1, occlusion: str = "depth",
+                    discard: float = 180.0, clear: bool = True,
+                    compact: bool = False,
+                    all_views: Optional[List[Dict[str, Any]]] = None,
+                    verbose: bool = True) -> List[str]:
+    """只跑 Blender 的逐视图投影烘焙，**不做合并、不导出**。
+
+    顺序生成（StableGen `generator.py:1848` `async_generate`）需要逐视图累积：
+    每一轮投一张图，`merge()` 会把 ``views/*.npy`` 全量相加，所以
+    ``clear=False`` 时新视图直接叠加到已有结果上，等价于 StableGen 每轮
+    `project_image(stop_index=i)` 的「重算 0..i 全部相机」。
+
+    ``unwrap="smart"`` 会额外写出 ``baked_uv.glb``（固定 BakeUV）。顺序生成
+    第一轮必须用它把 UV 定死，之后每轮都用 ``unwrap="keep"`` 往同一张图集里累加，
+    否则每轮重新 unwrap 会让上一轮的图集坐标失效。
+    """
+    work = Path(work_dir).resolve()
+    vdir = work / "views"
+    vdir.mkdir(parents=True, exist_ok=True)
+    ortho_eff = float(ortho) if ortho else ORTHO
+    cfg_views: Dict[str, Any] = {}
+    for v in views:
+        dst = vdir / f"{v['name']}.png"
+        how = v.get("align") or "frame"
+        if how != "frame":
+            raise ValueError("顺序生成必须用 frame 对齐（不做任何 2D 变换）")
+        info = make_frame_aligned_view(v["image"], dst, size)
+        cfg_views[v["name"]] = {
+            "image": str(dst.resolve()),
+            "azimuth": float(v.get("azimuth", 0)),
+            "elevation": float(v.get("elevation", 0)),
+        }
+        if verbose:
+            print(f"  视图 {v['name']}: 已同框（不裁剪不缩放）"
+                  f" 透明占比 {info['transparent']}", flush=True)
+    cfg = {"mesh": str(Path(mesh).resolve()), "work_dir": str(work),
+           "views": cfg_views, "size": size, "ortho": ortho_eff,
+           "exponent": exponent, "margin": margin, "decimate": decimate,
+           "engine": engine, "unwrap": unwrap, "occlude": occlude,
+           "feather": feather, "occlusion": occlusion, "discard": discard,
+           "compact": compact, "all_views": all_views or []}
+    cfg_path = work / "bake_config.json"
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    if clear:
+        for stale in (list(vdir.glob("*_color.npy"))
+                      + list(vdir.glob("*_weight.npy"))):
+            stale.unlink()
+    subprocess.run([str(blender_exe()), "-b", "-P",
+                    str(ROOT / "tools" / "blender_bake_views.py"),
+                    "--", str(cfg_path)], check=True)
+    return verify_baked_views(work, [v["name"] for v in views])
+
+
 def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
         *, size: int = 0, exponent: float = 3.0, margin: int = 4,
         decimate: int = 0, engine: str = "CYCLES", unwrap: str = "keep",
         fill: str = "base", blend: str = "weighted", detail: float = 0.0,
-        occlude: bool = True, ortho: float = 0.0,
+        occlude: bool = True, ortho: float = 0.0, feather: float = 0.1,
+        occlusion: str = "depth", discard: float = 180.0,
         work_dir: Optional[str | Path] = None, reproject: bool = False,
         verbose: bool = True) -> Dict[str, Any]:
     """views: [{"name","image","azimuth","elevation"?}]，image 是原始视图路径。
@@ -642,7 +737,8 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
         cfg = {"mesh": str(mesh), "work_dir": str(work), "views": cfg_views,
                "size": size, "ortho": ortho_eff, "exponent": exponent,
                "margin": margin, "decimate": decimate, "engine": engine,
-               "unwrap": unwrap, "occlude": occlude}
+               "unwrap": unwrap, "occlude": occlude, "feather": feather,
+               "occlusion": occlusion, "discard": discard}
         cfg_path = work / "bake_config.json"
         cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
                             encoding="utf-8")
@@ -674,7 +770,13 @@ def run(mesh: str | Path, out: str | Path, views: List[Dict[str, Any]],
             print("  输入 GLB 没有 baseColorTexture，改用扩散填充", flush=True)
     elif fill == "base" and verbose:
         print("  unwrap != keep：底图与 BakeUV 不同坐标系，改用扩散填充", flush=True)
-    merged = merge(work, size, base, blend, detail)
+    isl_for_fill = None
+    try:
+        from . import uvstats as _uvstats
+        isl_for_fill = _uvstats.island_mask(mesh, size)
+    except (OSError, ValueError, KeyError):
+        isl_for_fill = None
+    merged = merge(work, size, base, blend, detail, islands=isl_for_fill)
     # 真实覆盖：全图数字会被 bake margin 的「岛外扩张色」虚高，必须分开看
     try:
         from . import uvstats
